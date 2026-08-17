@@ -12,6 +12,7 @@ Each tool lives in its own folder with its own README (install + usage).
 | [AKDVent](./AKDVent) | `VE` | Auto-generates a Ventilation Schedule table from room MTEXTs. Calculates required opening area at 10% of room area (Malaysian UBBL). Pairs with **AKDHatchToLabel**. |
 | [AKDHatchToLabel](./AKDHatchToLabel) | `HATX` | Turns a room hatch into a formatted room label (name + area). Duplicate rooms auto-number. Settings-file driven. |
 | [AKDWallTool](./AKDWallTool) | `TW`, `FW` | Wall-linework cleanup. `TW` scissors X/T/L junctions, `FW` caps open wall ends. |
+| [AKDLayerTools](./AKDLayerTools) | `SS1`, `SS2`, `SS3` | Three layer utilities: `SS1` set current (preset list, re-fires last draw cmd), `SS2` select by layer (with append + by-selection modes), `SS3` move picked objects to a layer. |
 
 More tools will be added here over time.
 
