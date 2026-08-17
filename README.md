@@ -9,6 +9,7 @@ Each tool lives in its own folder with its own README (install + usage).
 | Folder | Command | What it does |
 |---|---|---|
 | [AKDPickArea](./AKDPickArea) | `AA` | Scaled area takeoff for windows, doors, and rooms. Picks closed polylines, totals with unit/scale conversion, drops a labeled MTEXT (e.g. `W3 / 1.44 SQM`). |
+| [AKDVent](./AKDVent) | `VE` | Auto-generates a Ventilation Schedule table from room MTEXTs. Calculates required opening area at 10% of room area (Malaysian UBBL). |
 
 More tools will be added here over time.
 
