@@ -18,7 +18,28 @@ Pairs with [AKDVent](../AKDVent) — the labels this tool produces are the exact
 
 Then type `HATX` to launch.
 
-> **Important:** `AKDHatchToLabel_Settings.txt` must sit **in the same folder** as the `.lsp` file. The tool looks for it there on every run.
+### Settings file — where it lives
+
+`AKDHatchToLabel_Settings.txt` holds your room list, units, colors, and text style. The LISP looks for it in this order on every run:
+
+1. A previously remembered path (env var `AKDHATCH_SETTINGS`).
+2. Next to the `.lsp` file (recommended — keep them together).
+3. Anywhere on AutoCAD's Support File Search Paths.
+4. **First-run fallback:** if none of the above worked, AutoCAD pops a file picker asking you to locate `AKDHatchToLabel_Settings.txt`. Pick it once — the path is saved and reused automatically after that.
+
+If no settings file is found at all, the tool falls back to hardcoded defaults (only `BED`, `BAL`, `TOI`) and prints a warning. If you see only those three rooms, the settings file isn't being read.
+
+### Editing the settings file
+
+Open `AKDHatchToLabel_Settings.txt` in any text editor. Save. The LISP re-reads it on every `HATX` run — **no reload needed**.
+
+To reset the remembered picker path (e.g. after moving the file), run this once at the AutoCAD command line:
+
+```
+(setenv "AKDHATCH_SETTINGS" "")
+```
+
+Next `HATX` run will re-detect or re-prompt.
 
 ## Workflow
 
@@ -55,6 +76,8 @@ If your pre-selection includes an existing room MTEXT/TEXT, HATX prompts for a n
 | `Font`, `Bold:Yes/No`, `Uppercase:Yes/No` | Text style. |
 
 Edit and save — the LISP re-reads the file on every run. No reload needed.
+
+**Font:** the `Font:` setting is applied to both the room name **and** the area lines (via inline MTEXT overrides), so labels look consistent regardless of the drawing's current text style. Only the room line is bolded; area lines use the same font in regular weight.
 
 ## Notes
 
