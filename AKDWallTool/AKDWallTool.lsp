@@ -1,7 +1,7 @@
 ; ============================================================
 ; AKDWallTool.lsp
 ; Combined wall-cleanup toolkit
-;   TW       = Junction Scissor (X / T / L cleanup + inner stub removal)
+;   TW       = Junction Scissor (X / T cleanup + inner stub removal)
 ;   FW       = Fix Walls (cap open wall ends)
 ;   FIXWALLS = alias of FW
 ; Source: WallScissor.lsp + FixWalls.lsp (from AKD Scissor Backup)
@@ -19,6 +19,7 @@
 ; ============================================================
 
 (setq *tw:stub-tol* 1.0)
+(setq *tw:corner-tol* 0.5)   ; distance tolerance for matching original endpoints
 
 (defun tw:~= (a b) (< (abs (- a b)) 1e-3))
 (defun tw:3d (p) (list (car p) (cadr p) 0.0))
@@ -126,38 +127,60 @@
   r
 )
 
+;; val is (t . cause) where cause is 'T (perp ended at ip) or 'X (perp passed through)
 (defun tw:addtbl (tbl e val)
   (cons
     (cons e (cons val (cdr (assoc e tbl))))
     (tw:remove-key e tbl))
 )
 
-(defun tw:split (e ts / pts p1 p2 pr tl a b out)
+;; tvs is a list of (t . cause) pairs.
+;; Returns list of (ename cause-at-start cause-at-end).
+;; Cause is 'orig at t=0 and t=1 (original line endpoints).
+(defun tw:split (e tvs / pts p1 p2 pr sorted a b out ta tb ca cb)
   (setq pts (tw:pts e)
         p1 (car pts)
         p2 (cadr pts)
         pr (tw:props e)
-        tl (tw:dedup (append '(0.0 1.0) ts))
+        sorted (tw:sort-tvs
+                 (append (list (cons 0.0 'orig) (cons 1.0 'orig)) tvs))
         out nil)
 
   (entdel e)
 
-  (while (>= (length tl) 2)
-    (setq a (list (+ (car p1)(* (car tl)(- (car p2)(car p1))))
-                  (+ (cadr p1)(* (car tl)(- (cadr p2)(cadr p1))))
+  (while (>= (length sorted) 2)
+    (setq ta (car (nth 0 sorted))
+          ca (cdr (nth 0 sorted))
+          tb (car (nth 1 sorted))
+          cb (cdr (nth 1 sorted)))
+
+    (setq a (list (+ (car p1)(* ta (- (car p2)(car p1))))
+                  (+ (cadr p1)(* ta (- (cadr p2)(cadr p1))))
                   0.0)
-          b (list (+ (car p1)(* (cadr tl)(- (car p2)(car p1))))
-                  (+ (cadr p1)(* (cadr tl)(- (cadr p2)(cadr p1))))
+          b (list (+ (car p1)(* tb (- (car p2)(car p1))))
+                  (+ (cadr p1)(* tb (- (cadr p2)(cadr p1))))
                   0.0))
 
     (if (> (distance a b) *tw:stub-tol*)
       (progn
         (tw:make-line a b pr)
-        (setq out (cons (entlast) out))
+        (setq out (cons (list (entlast) ca cb) out))
       )
     )
-    (setq tl (cdr tl))
+    (setq sorted (cdr sorted))
   )
+  out
+)
+
+;; Sort a list of (t . cause) pairs by t; dedupe near-equal t (keeping first).
+(defun tw:sort-tvs (lst / order out prev)
+  (setq order
+    (vl-sort lst '(lambda (a b) (< (car a) (car b)))))
+  (setq out nil prev nil)
+  (foreach p order
+    (if (or (null prev) (> (abs (- (car p) prev)) 1e-6))
+      (setq out (append out (list p))
+            prev (car p))))
   out
 )
 
@@ -176,13 +199,18 @@
   )
 )
 
-(defun tw:addtrim (lst e ip)
-  (cons (list e ip) lst)
-)
-
 (defun c:TW (/ pt1 pt2 ss mnx mny mxx mxy enames tbl
                i j ea eb p1a p2a p1b p2b ip ta tb
-               new kept x ne pts p1 p2 md trims)
+               new kept x ne pts p1 p2 seg ca cb
+               parents frags par allKept fe origPts)
+
+  ;; True if p is close to ≥2 original endpoints — i.e. sits at a real
+  ;; wall corner where multiple lines terminate.
+  (defun tw:is-corner (p / n)
+    (setq n 0)
+    (foreach q origPts
+      (if (< (distance p q) *tw:corner-tol*) (setq n (1+ n))))
+    (> n 1))
 
   (princ "\nTW - X + T + L Junction Cleaner")
 
@@ -219,11 +247,13 @@
                   i (1+ i))
           )
 
-          ;; init split table
-          (setq trims nil)
+          ;; init split table + capture all original endpoints for corner detection
+          (setq tbl nil origPts nil)
           (foreach e enames
             (setq tbl (cons (cons e nil) tbl))
-          )
+            (setq pts (tw:pts e))
+            (setq origPts (cons (car pts) origPts))
+            (setq origPts (cons (cadr pts) origPts)))
 
           ;; compare every pair
           (setq i 0)
@@ -244,58 +274,35 @@
                       (setq ta (tw:tparam ip p1a p2a)
                             tb (tw:tparam ip p1b p2b))
 
-                      ;; X and T junctions
-                      (if
-                        (and ta tb
-                             (or
-                               ;; X crossing
-                               (and (> ta 1e-6)
-                                    (< ta (- 1.0 1e-6))
-                                    (> tb 1e-6)
-                                    (< tb (- 1.0 1e-6)))
-
-                               ;; T = A interior, B endpoint
-                               (and (> ta 1e-6)
-                                    (< ta (- 1.0 1e-6))
-                                    (or (< (abs tb) 1e-6)
-                                        (< (abs (- tb 1.0)) 1e-6)))
-
-                               ;; T = B interior, A endpoint
-                               (and (> tb 1e-6)
-                                    (< tb (- 1.0 1e-6))
-                                    (or (< (abs ta) 1e-6)
-                                        (< (abs (- ta 1.0)) 1e-6)))
-                             )
-                        )
+                      ;; Classify the intersection and tag each split with
+                      ;; its cause: 'T (the OTHER line ended at ip — a real
+                      ;; T-stem meeting this line) or 'X (the other line
+                      ;; passed through — a crossing / overshoot).
+                      (if (and ta tb)
                         (progn
-                          ;; split A if interior hit
-                          (if (and (> ta 1e-6)
-                                   (< ta (- 1.0 1e-6)))
-                            (setq tbl (tw:addtbl tbl ea ta))
+                          ;; Split A if ip is interior of A.
+                          ;; Cause for A's split = whether B was ending (T)
+                          ;; or passing through (X) at ip.
+                          (if (and (> ta 1e-6) (< ta (- 1.0 1e-6)))
+                            (setq tbl
+                              (tw:addtbl tbl ea
+                                (cons ta
+                                  (if (or (< (abs tb) 1e-6)
+                                          (< (abs (- tb 1.0)) 1e-6))
+                                    'T 'X))))
                           )
 
-                          ;; split B if interior hit
-                          (if (and (> tb 1e-6)
-                                   (< tb (- 1.0 1e-6)))
-                            (setq tbl (tw:addtbl tbl eb tb))
+                          ;; Split B if ip is interior of B.
+                          (if (and (> tb 1e-6) (< tb (- 1.0 1e-6)))
+                            (setq tbl
+                              (tw:addtbl tbl eb
+                                (cons tb
+                                  (if (or (< (abs ta) 1e-6)
+                                          (< (abs (- ta 1.0)) 1e-6))
+                                    'T 'X))))
                           )
                         )
                       )
-
-                      ;; L corner cleanup
-                      (if
-                        (and
-                          (or (< (abs ta) 1e-6)
-                              (< (abs (- ta 1.0)) 1e-6))
-                          (or (< (abs tb) 1e-6)
-                              (< (abs (- tb 1.0)) 1e-6))
-                        )
-                        (progn
-                          (setq trims (tw:addtrim trims ea ip))
-                          (setq trims (tw:addtrim trims eb ip))
-                        )
-                      )
-
                     )
                   )
                 )
@@ -306,41 +313,78 @@
             (setq i (1+ i))
           )
 
-          (foreach itm trims
-            (if (entget (car itm))
-              (tw:trim-to-point (car itm) (cadr itm))
-            )
-          )
-
-          ;; split lines
+          ;; split lines — each returned segment carries the cause
+          ;; ('T / 'X / 'orig) at each of its two endpoints.
+          ;; Also remember each parent's original endpoints + props so we
+          ;; can rebuild it as a single line if no fragments end up deleted.
           (setq new nil
-                kept nil)
+                kept nil
+                parents nil)
 
           (foreach x tbl
             (if (cdr x)
-              (setq new (append new (tw:split (car x) (cdr x))))
+              (progn
+                (setq pts (tw:pts (car x)))
+                (setq parents
+                  (cons (list (car pts)             ; orig p1
+                              (cadr pts)            ; orig p2
+                              (tw:props (car x))    ; orig properties
+                              nil)                  ; fragment enames (filled next)
+                        parents))
+                (setq frags (tw:split (car x) (cdr x)))
+                (setq parents
+                  (cons (list (car (car parents))
+                              (cadr (car parents))
+                              (caddr (car parents))
+                              (mapcar 'car frags))
+                        (cdr parents)))
+                (setq new (append new frags)))
               (setq kept (cons (car x) kept))
             )
           )
 
-          ;; remove inside scraps
-          (foreach ne new
+          ;; Remove inside scraps. Delete any new segment entirely inside
+          ;; the picked box UNLESS both its endpoints are T-junction splits
+          ;; — that "T-T" case is the back-line of a wall continuing past
+          ;; the junction and must survive.
+          ;;
+          ;; This catches:
+          ;;   X-X  = stub sitting inside a perpendicular wall's material
+          ;;   X-orig / orig-X = perpendicular's own overshoot past a crossing
+          ;;   T-orig / orig-T = short tail past a real T stem inside the box
+          (foreach seg new
+            (setq ne (nth 0 seg)
+                  ca (nth 1 seg)
+                  cb (nth 2 seg))
             (if (and (entget ne)
                      (setq pts (tw:pts ne)))
               (progn
                 (setq p1 (car pts)
-                      p2 (cadr pts)
-                      md (tw:mid p1 p2))
+                      p2 (cadr pts))
 
-                (if
-                  (or
-                    (and (tw:inside p1 mnx mny mxx mxy)
-                         (tw:inside p2 mnx mny mxx mxy))
-                    (tw:inside md mnx mny mxx mxy)
-                  )
+                (if (and (tw:inside p1 mnx mny mxx mxy)
+                         (tw:inside p2 mnx mny mxx mxy)
+                         (not (and (eq ca 'T) (eq cb 'T)))
+                         (not (tw:is-corner p1))
+                         (not (tw:is-corner p2)))
                   (entdel ne)
                   (setq kept (cons ne kept))
                 )
+              )
+            )
+          )
+
+          ;; Merge back — for each parent line where every fragment survived
+          ;; the scrap pass, remove the fragments and recreate the parent as
+          ;; a single continuous LINE.
+          (foreach par parents
+            (setq allKept T)
+            (foreach fe (nth 3 par)
+              (if (not (entget fe)) (setq allKept nil)))
+            (if (and allKept (nth 3 par))
+              (progn
+                (foreach fe (nth 3 par) (entdel fe))
+                (tw:make-line (nth 0 par) (nth 1 par) (nth 2 par))
               )
             )
           )
@@ -438,10 +482,19 @@
 
 (defun c:FIXWALLS (/ pt1 pt2 ss i enames ea eb u1 u2 ptsA ptsB
                      p1a p2a p1b p2b eae ebe perp axa axb
-                     mnx mny mxx mxy done j os)
+                     mnx mny mxx mxy done j os *error* old-error)
 
   (setq os (getvar "OSMODE"))
   (setvar "OSMODE" 0)
+
+  ;; Local *error* handler — always restores OSMODE, even on Esc/error
+  (setq old-error *error*)
+  (defun *error* (msg)
+    (setvar "OSMODE" os)
+    (setq *error* old-error)
+    (if (and msg (not (member msg '("Function cancelled" "quit / exit abort"))))
+      (princ (strcat "\nError: " msg)))
+    (princ))
 
   (princ "\nFIXWALLS - Cap Open Walls")
 
@@ -533,6 +586,7 @@
   )
 
   (setvar "OSMODE" os)
+  (setq *error* old-error)
   (princ)
 )
 
