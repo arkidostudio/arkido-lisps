@@ -7,10 +7,12 @@ Scaled area takeoff tool for AutoCAD. Picks closed polylines, totals their areas
 
 ## Install
 
-1. Open AutoCAD.
-2. Type `APPLOAD` and press Enter.
-3. Load `AKDPickArea.lsp`.
-4. (Optional) Add it to the **Startup Suite** to auto-load every session.
+**Quickest:** drag `AKDPickArea.lsp` from Finder / Explorer onto the AutoCAD drawing window — it loads for the current session.
+
+**Persistent (recommended):**
+1. Type `APPLOAD` and press Enter.
+2. Load `AKDPickArea.lsp`.
+3. Add it to the **Startup Suite** so it auto-loads every session.
 
 Then type `AA` to launch.
 

@@ -14,12 +14,14 @@ More tools will be added here over time.
 
 ## Loading a LISP in AutoCAD
 
-1. Open AutoCAD.
-2. Type `APPLOAD` and press Enter.
-3. Browse to the `.lsp` file inside the tool's folder and load it.
-4. Type the command shown in the table above.
+**Quickest — drag & drop:** drag the `.lsp` file from Finder / Explorer onto the AutoCAD drawing window. It loads for the current session only.
 
-To auto-load on startup, add the `.lsp` to the **Startup Suite** in the same `APPLOAD` dialog.
+**Persistent — APPLOAD:**
+1. Type `APPLOAD` and press Enter.
+2. Browse to the `.lsp` file inside the tool's folder and load it.
+3. Add it to the **Startup Suite** in the same dialog to auto-load every session.
+
+Then type the command shown in the table above.
 
 ## License
 
