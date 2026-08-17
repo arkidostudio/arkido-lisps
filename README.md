@@ -11,6 +11,7 @@ Each tool lives in its own folder with its own README (install + usage).
 | [AKDPickArea](./AKDPickArea) | `AA` | Scaled area takeoff for windows, doors, and rooms. Picks closed polylines, totals with unit/scale conversion, drops a labeled MTEXT (e.g. `W3 / 1.44 SQM`). |
 | [AKDVent](./AKDVent) | `VE` | Auto-generates a Ventilation Schedule table from room MTEXTs. Calculates required opening area at 10% of room area (Malaysian UBBL). Pairs with **AKDHatchToLabel**. |
 | [AKDHatchToLabel](./AKDHatchToLabel) | `HATX` | Turns a room hatch into a formatted room label (name + area). Duplicate rooms auto-number. Settings-file driven. |
+| [AKDWallTool](./AKDWallTool) | `TW`, `FW` | Wall-linework cleanup. `TW` scissors X/T/L junctions, `FW` caps open wall ends. |
 
 More tools will be added here over time.
 
