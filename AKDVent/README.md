@@ -5,6 +5,8 @@ Auto-generates a **Ventilation Schedule** table in your AutoCAD drawing by picki
 **Command:** `VE`
 **Platform:** AutoCAD for Mac (also runs on Windows AutoCAD).
 
+> **Best paired with [AKDHatchToLabel](../AKDHatchToLabel).** That tool produces room labels in exactly the format AKDVent expects to parse (room name on line 1, `12.50 SQM` on line 2, `134.55 SQFT` on line 3), so the two work together end-to-end: hatch a room → `HATX` labels it → `VE` collects labels into the schedule.
+
 ## Install
 
 **Quickest:** drag `AKDVent.lsp` from Finder / Explorer onto the AutoCAD drawing window — it loads for the current session.
