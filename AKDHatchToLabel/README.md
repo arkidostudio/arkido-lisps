@@ -83,4 +83,3 @@ Edit and save — the LISP re-reads the file on every run. No reload needed.
 
 - Only **HATCH** entities produce new labels. To label a room, you must have a hatch on it first.
 - All formatting is baked into the MTEXT string as inline codes (font, height, color) — entity properties still track layer/color per your settings.
-- The command remains `HATX` for muscle-memory continuity from the original tool name.
