@@ -1,1 +1,5 @@
 .DS_Store
+
+# Work-in-progress, not ready for publish
+WallTool.lsp
+WallToolConfig.lsp
