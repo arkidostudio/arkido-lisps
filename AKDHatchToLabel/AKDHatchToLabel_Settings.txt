@@ -1,0 +1,81 @@
+# ==================================================
+# AKDHatchToLabel_Settings.txt
+# Configuration file for AKDHatchToLabel AutoCAD LISP
+# Multi-line Rooms block supported
+# ==================================================
+
+# ---------- LAYER ----------
+# Target layer for created text
+Layer:X-TEXT
+
+# ---------- COLORS ----------
+# AutoCAD color index
+# 256 = ByLayer
+RoomColor:256
+AreaColor:2
+
+# ---------- ROOM LIST ----------
+# Format:
+# SHORTCUT=Room Name
+# One room per line after Rooms:
+# Use your own shortcuts (BED, BAL, LIV, etc.)
+
+Rooms:
+BEDROOM=Bedroom
+TOILET=Toilet
+LIVING=Living Room
+DINING=Dining
+KITCHEN=Kitchen
+SDK=Sitting/Dining/Kitchen
+LAUNDRY=Laundry
+WARDROBE=Wardrobe
+STORAGE=Storage
+LOBBY=Lobby
+SHOP=Shop
+CAFE=Cafe
+OFFICE=Office
+TERRACE=Terrace
+BALCONY=Balcony
+DRYBAL=Dry Bal.
+CORR=Corridor
+LIFT=Lift
+PARKING=Parking
+
+# ==================================================
+# AREA DISPLAY SETTINGS
+# Format:
+# Units1:UNIT|DECIMALS
+# Units2:UNIT|DECIMALS
+#
+# UNIT options:
+# SQM   = Square Meter
+# SQFT  = Square Foot
+# HA    = Hectare
+# ACRE  = Acre
+# 0     = Hide line
+# ==================================================
+
+Units1:SQM|2
+Units2:SQFT|2
+
+# ==================================================
+# CUSTOM CONVERSION (optional)
+# Leave blank to use built-in conversion
+# Example:
+# Conv1:0.3025
+# ==================================================
+
+Conv1:
+Conv2:
+
+# ==================================================
+# TEXT STYLE SETTINGS
+# ==================================================
+
+TextHeightRoom:150
+TextHeightArea:100
+LineSpacing:0.55
+
+Font:Arial
+Bold:Yes
+Uppercase:Yes
