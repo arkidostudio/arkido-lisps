@@ -12,7 +12,7 @@ Each tool lives in its own folder with its own README (install + usage).
 | [AKDVent](./AKDVent) | `VE` | Auto-generates a Ventilation Schedule table from room MTEXTs. Calculates required opening area at 10% of room area (Malaysian UBBL). Pairs with **AKDHatchToLabel**. |
 | [AKDHatchToLabel](./AKDHatchToLabel) | `HATX` | Turns a room hatch into a formatted room label (name + area). Duplicate rooms auto-number. Settings-file driven. |
 | [AKDWallTool](./AKDWallTool) | `TW`, `FW` | Wall-linework cleanup. `TW` scissors X/T/L junctions, `FW` caps open wall ends. |
-| [AKDLayerTools](./AKDLayerTools) | `ERC`, `ERS`, `ERT` | Three layer utilities: `ERC` set current (preset list, re-fires last draw cmd), `ERS` select by layer (with append + by-selection modes), `ERT` move picked objects to a layer. |
+| [AKDLayerTools](./AKDLayerTools) | `ER1` `ERS` `ERT` `ERD` `ERF` `ERA` `ERAF` `ERL` `ERU` `ERSC` | Full layer toolkit: set current, select by layer, move to layer, isolate objects (toggle), layer off / lock / unlock (pick loops), restore-all recovery, shortcut list. |
 
 More tools will be added here over time.
 

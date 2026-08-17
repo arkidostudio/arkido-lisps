@@ -1,14 +1,21 @@
 ; ============================================================
 ; AKDLayerTools.lsp
-; Three layer utilities in one file:
-;   ERC = Set Current Layer    (preset list, re-runs last draw cmd)
-;   ERS = Select By Layer      (grab all objects on a layer)
-;   ERT = Move To Layer        (move picked objects to a layer)
+; Layer utilities in one file:
+;   ER1   Set Current Layer     (preset list, re-runs last draw cmd)
+;   ERS   Select By Layer       (grab all objects on a layer)
+;   ERT   Move To Layer         (move picked objects to a layer)
+;   ERD   Isolate Objects       (pick → hide the rest; run again to unisolate)
+;   ERF   Layer Off (pick)      (pick object → turn its layer off; repeats)
+;   ERA   Layers All On/Thaw    (restore visibility + unisolate)
+;   ERAF  Turn Off All But Current
+;   ERL   Lock Layer (pick)     (pick object → lock its layer; repeats)
+;   ERU   Unlock Layer (pick)   (pick object → unlock its layer; repeats)
+;   ERSC  Show all shortcuts
 ; Self-contained: no .dcl or config files needed.
 ; ============================================================
 
-;; ---- Edit your ERC preset layers here ----
-(setq *ERC_Layers*
+;; ---- Edit your ER1 preset layers here ----
+(setq *ER1_Layers*
   '(
     "A-WALL"
     "A-DOOR"
@@ -126,32 +133,32 @@
 )
 
 ; ============================================================
-; ERC - Set Current Layer (preset list) + re-fire last draw cmd
+; ER1 - Set Current Layer (preset list) + re-fire last draw cmd
 ; ============================================================
 
-(defun c:ERC (/ fn f dcl_id idx selected lastcmd)
+(defun c:ER1 (/ fn f dcl_id idx selected lastcmd)
 
-  (if (not *ERC_Layers*)
-    (progn (alert "No layers defined in *ERC_Layers*.") (exit)))
+  (if (not *ER1_Layers*)
+    (progn (alert "No layers defined in *ER1_Layers*.") (exit)))
 
-  (setq fn (vl-filename-mktemp "erc.dcl"))
+  (setq fn (vl-filename-mktemp "er1.dcl"))
   (setq f (open fn "w"))
-  (write-line "erc_dialog : dialog { label = \"Set Current Layer\";" f)
+  (write-line "er1_dialog : dialog { label = \"Set Current Layer\";" f)
   (write-line " : list_box { key = \"lst\"; width = 30; height = 15; allow_accept = true; }" f)
   (write-line " spacer; ok_cancel; }" f)
   (close f)
 
   (setq dcl_id (load_dialog fn))
-  (if (not (new_dialog "erc_dialog" dcl_id)) (exit))
+  (if (not (new_dialog "er1_dialog" dcl_id)) (exit))
 
   (start_list "lst")
-  (mapcar 'add_list *ERC_Layers*)
+  (mapcar 'add_list *ER1_Layers*)
   (end_list)
 
   (setq idx "0")
-  (if (and *erc:last-layer* (member *erc:last-layer* *ERC_Layers*))
-    (setq idx (itoa (- (length *ERC_Layers*)
-                       (length (member *erc:last-layer* *ERC_Layers*))))))
+  (if (and *er1:last-layer* (member *er1:last-layer* *ER1_Layers*))
+    (setq idx (itoa (- (length *ER1_Layers*)
+                       (length (member *er1:last-layer* *ER1_Layers*))))))
 
   (action_tile "lst"    "(setq idx $value)(if (= $reason 4) (done_dialog 1))")
   (action_tile "accept" "(done_dialog 1)")
@@ -161,14 +168,14 @@
   (mode_tile "lst" 2)
 
   (if (= (start_dialog) 1)
-    (setq selected (nth (atoi idx) *ERC_Layers*)))
+    (setq selected (nth (atoi idx) *ER1_Layers*)))
 
   (unload_dialog dcl_id)
   (vl-file-delete fn)
 
   (if selected
     (progn
-      (setq *erc:last-layer* selected)
+      (setq *er1:last-layer* selected)
       (setvar "CLAYER" selected)
       (princ (strcat "\nCurrent layer set to: " selected))
       (setq lastcmd (getvar "CMDNAMES"))
@@ -257,5 +264,170 @@
   (princ)
 )
 
-(princ "\nAKDLayerTools loaded. Commands: ERC  ERS  ERT")
+; ============================================================
+; Helpers
+; ============================================================
+
+(defun akd:all-layers (/ rec out)
+  (setq out '() rec (tblnext "LAYER" T))
+  (while rec
+    (setq out (cons (cdr (assoc 2 rec)) out))
+    (setq rec (tblnext "LAYER")))
+  out
+)
+
+(defun akd:layer-cmd (op layer)
+  (command "_.-LAYER" op layer "")
+  (while (> (getvar "CMDACTIVE") 0) (command ""))
+)
+
+; ============================================================
+; ERD - Isolate Objects: hide everything except the picked
+;       objects (regardless of layer). Run again to unisolate.
+;       Wraps native ISOLATEOBJECTS / UNISOLATEOBJECTS.
+; ============================================================
+
+(defun c:ERD (/ ss)
+  (if *erd:isolated*
+    (progn
+      (command "_.UNISOLATEOBJECTS")
+      (while (> (getvar "CMDACTIVE") 0) (command ""))
+      (setq *erd:isolated* nil)
+      (princ "\nObjects unhidden."))
+    (progn
+      (prompt "\nPick objects to isolate. Enter when done.")
+      (if (setq ss (ssget))
+        (progn
+          (command "_.ISOLATEOBJECTS" ss "")
+          (while (> (getvar "CMDACTIVE") 0) (command ""))
+          (setq *erd:isolated* T)
+          (princ "\nObjects isolated. Run ERD again to unisolate."))
+        (princ "\nNo objects picked."))))
+  (princ)
+)
+
+; ============================================================
+; ERF - Turn off the layer of a picked object. Repeatable.
+; ============================================================
+
+(defun c:ERF (/ e ent lay cur)
+  (setq cur (getvar "CLAYER"))
+  (prompt "\nPick object(s) — layer gets turned off. Enter to exit.")
+  (while (setq e (entsel "\nPick object: "))
+    (setq ent (car e)
+          lay (cdr (assoc 8 (entget ent))))
+    (cond
+      ((= lay cur)
+       (princ (strcat "\nSkip: " lay " is the current layer.")))
+      (T
+       (akd:layer-cmd "_OFF" lay)
+       (princ (strcat "\nLayer OFF: " lay)))))
+  (princ)
+)
+
+; ============================================================
+; ERA - Thaw + turn on all layers (recover from ERD/ERF/ERAF)
+; ============================================================
+
+(defun c:ERA ()
+  (command "_.-LAYER" "_THAW" "*" "_ON" "*" "")
+  (while (> (getvar "CMDACTIVE") 0) (command ""))
+  (if *erd:isolated*
+    (progn
+      (command "_.UNISOLATEOBJECTS")
+      (while (> (getvar "CMDACTIVE") 0) (command ""))
+      (setq *erd:isolated* nil)))
+  (princ "\nAll layers ON, thawed, objects unhidden.")
+  (princ)
+)
+
+; ============================================================
+; ERAF - Turn OFF all layers except current
+; ============================================================
+
+(defun c:ERAF (/ cur)
+  (setq cur (getvar "CLAYER"))
+  (foreach lay (akd:all-layers)
+    (if (/= lay cur) (akd:layer-cmd "_OFF" lay)))
+  (princ (strcat "\nAll layers off except: " cur))
+  (princ)
+)
+
+; ============================================================
+; ERL - Lock layers by picking objects. Repeatable.
+; ============================================================
+
+(defun c:ERL (/ e ent lay cur done)
+  (setq cur (getvar "CLAYER") done nil)
+  (prompt "\nPick object(s) — layer gets locked. [A]=All except current. Enter to exit.")
+  (while (not done)
+    (initget "All")
+    (setq e (entsel "\nPick object or [All]: "))
+    (cond
+      ((= e "All")
+       (foreach lay (akd:all-layers)
+         (if (/= lay cur) (akd:layer-cmd "_LOCK" lay)))
+       (princ (strcat "\nLocked all layers except: " cur))
+       (setq done T))
+      ((null e)
+       (setq done T))
+      (T
+       (setq ent (car e)
+             lay (cdr (assoc 8 (entget ent))))
+       (cond
+         ((= lay cur)
+          (princ (strcat "\nSkip: " lay " is the current layer.")))
+         (T
+          (akd:layer-cmd "_LOCK" lay)
+          (princ (strcat "\nLocked: " lay)))))))
+  (princ)
+)
+
+; ============================================================
+; ERU - Unlock layers by picking objects. Repeatable.
+; ============================================================
+
+(defun c:ERU (/ e ent lay done)
+  (setq done nil)
+  (prompt "\nPick object(s) — layer gets unlocked. [A]=All layers. Enter to exit.")
+  (while (not done)
+    (initget "All")
+    (setq e (entsel "\nPick object or [All]: "))
+    (cond
+      ((= e "All")
+       (command "_.-LAYER" "_UNLOCK" "*" "")
+       (while (> (getvar "CMDACTIVE") 0) (command ""))
+       (princ "\nAll layers unlocked.")
+       (setq done T))
+      ((null e)
+       (setq done T))
+      (T
+       (setq ent (car e)
+             lay (cdr (assoc 8 (entget ent))))
+       (akd:layer-cmd "_UNLOCK" lay)
+       (princ (strcat "\nUnlocked: " lay)))))
+  (princ)
+)
+
+; ============================================================
+; ERSC - Show shortcuts
+; ============================================================
+
+(defun c:ERSC ()
+  (prompt "\n================ AKDLayerTools ================")
+  (prompt "\n ER1   Set Current Layer (preset list)")
+  (prompt "\n ERS   Select By Layer")
+  (prompt "\n ERT   Move Selected Objects To Layer")
+  (prompt "\n ERD   Isolate picked objects (toggle)")
+  (prompt "\n ERF   Turn OFF picked object's layer (loop)")
+  (prompt "\n ERA   All layers ON + Thawed + Unisolate")
+  (prompt "\n ERAF  Turn OFF all layers except current")
+  (prompt "\n ERL   Lock picked object's layer (loop)")
+  (prompt "\n ERU   Unlock picked object's layer (loop)")
+  (prompt "\n ERSC  Show this list")
+  (prompt "\n===============================================")
+  (princ)
+)
+
+(princ "\nAKDLayerTools loaded. Type ERSC for the shortcut list.")
 (princ)
