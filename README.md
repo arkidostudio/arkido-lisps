@@ -1,6 +1,6 @@
 # Arkido LISPs
 
-AutoCAD LISP tools built for the Arkido (AKD) architecture workflow. Written and tested on **AutoCAD for Mac**; most should also run on Windows AutoCAD without changes.
+AutoCAD LISP tools developed for optimizing Architectural and Drafting workflows.
 
 Each tool lives in its own folder with its own README (install + usage).
 
