@@ -1,16 +1,23 @@
 # AKDLayerTools
 
-Three layer utilities in one LISP — a small, coordinated toolkit that covers the everyday layer moves in AutoCAD without leaving the keyboard.
-
-| Command | What it does |
-|---|---|
-| **ERC** | **Set Current Layer** — dialog of *preset* layers, sets the pick current, then re-fires the last drawing command so you keep drawing. |
-| **ERS** | **Select By Layer** — dialog of *all drawing* layers. Grabs everything on the chosen layer. Supports whole-drawing selection, user-drawn crossing window, filtering an existing selection (double-click), and an Append toggle. |
-| **ERT** | **Move To Layer** — dialog of *all drawing* layers. Moves the objects you pick after OK onto the chosen layer. |
-
-All three remember your last-picked layer across the session and pre-select it next time.
+A coordinated toolkit of layer utilities for AutoCAD — everything you actually do with layers, on short two-to-four-letter shortcuts. One `.lsp` file, no config or `.dcl` files needed.
 
 **Platform:** AutoCAD for Mac (also runs on Windows AutoCAD).
+
+## Commands
+
+| Shortcut | Name | What it does |
+|---|---|---|
+| **ER1** | Set Current Layer | Dialog of **preset** layers → sets picked one current, then re-fires the last drawing command so you keep drawing. |
+| **ERS** | Select By Layer | Dialog of **all** drawing layers → grabs every entity on that layer. Whole drawing / by-selection / append-mode / filter existing grip selection. |
+| **ERT** | Move To Layer | Dialog of all layers → pick objects → they move onto that layer. |
+| **ERD** | Isolate Objects (toggle) | Pick objects → everything else hides (regardless of layer). Run again to unisolate. Wraps native `ISOLATEOBJECTS` / `UNISOLATEOBJECTS`. |
+| **ERF** | Layer Off (pick loop) | Pick object → its layer turns off. Keeps prompting. Enter exits. Skips current layer. |
+| **ERA** | Restore All | One-key recovery: turns on all layers, thaws all layers, unisolates. Wipes ERD memory. |
+| **ERAF** | All Off But Current | Turns off every layer except your current one. |
+| **ERL** | Lock Layer (pick loop) | Pick object → its layer locks. Type `A` at the prompt to lock every layer except current. Enter exits. |
+| **ERU** | Unlock Layer (pick loop) | Pick object → its layer unlocks. Type `A` to unlock all. Enter exits. |
+| **ERSC** | Shortcuts | Prints the command list to the command line. |
 
 ## Install
 
@@ -21,16 +28,14 @@ All three remember your last-picked layer across the session and pre-select it n
 2. Load `AKDLayerTools.lsp`.
 3. Add it to the **Startup Suite** so it auto-loads every session.
 
-Then type `ERC`, `ERS`, or `ERT` to launch.
+Loading one file gives you all ten commands.
 
-Loading a single file gives you all three commands. No `.dcl` or config files — the dialogs are generated at runtime and cleaned up on close.
+## ER1 — preset list
 
-## ERC — Set Current Layer
-
-Preset workflow. Edit the preset list at the top of the LISP file:
+Edit the preset list at the top of `AKDLayerTools.lsp`:
 
 ```lisp
-(setq *ERC_Layers*
+(setq *ER1_Layers*
   '(
     "A-WALL"
     "A-DOOR"
@@ -43,39 +48,26 @@ Preset workflow. Edit the preset list at the top of the LISP file:
 )
 ```
 
-Flow:
-1. Mid-`LINE` (or any of `PLINE / ARC / CIRCLE / RECTANG / POLYGON / MTEXT / TEXT / HATCH`), realise you're on the wrong layer.
-2. Type `ERC`.
-3. Double-click a preset layer, or select + OK.
-4. Layer is set current **and** the command you were running is re-launched — click the next point and keep going.
+`ER1` re-fires these draw commands after setting the layer: `LINE`, `PLINE`, `ARC`, `CIRCLE`, `RECTANG`, `POLYGON`, `MTEXT`, `TEXT`, `HATCH`. Anything else falls back to `LINE`.
 
-Anything else falls back to launching `LINE`.
-
-## ERS — Select By Layer
-
-Dialog lists every layer in the drawing (alphabetically). Buttons:
+## ERS — buttons
 
 | Button | Behavior |
 |---|---|
-| **All (Drawing)** *(default / Enter)* | Grabs every entity on the chosen layer, whole drawing. |
+| **All (Drawing)** *(default / Enter)* | Every entity on the chosen layer, whole drawing. |
 | **By Selection** | Prompts for two corners → crossing window filtered to that layer. |
 | **Cancel** | Nothing. |
-| **Append: OFF / ON** *(toggle)* | Merges the new layer-selection with objects you already had grip-selected. State remembered across runs. |
+| **Append: OFF / ON** *(toggle)* | Merges the new selection with objects already grip-selected. State remembered across runs. |
 
-**Double-click a layer** with objects already grip-selected → filters that selection down to just entities on the chosen layer. If nothing was pre-selected, double-click falls through to *All*.
+**Double-click a layer** with objects already grip-selected → filters that selection to just entities on the chosen layer. If nothing was pre-selected, double-click behaves like *All*.
 
-## ERT — Move To Layer
+## Typical recovery flow
 
-Simplest of the three. Flow:
-1. Type `ERT`.
-2. Double-click a layer, or select + OK.
-3. `Select objects:` prompt — pick the entities you want moved.
-4. Every picked entity's layer is rewritten. Regen. Grip selection cleared.
-
-Prints the count when done.
+Layer state gone weird? Just type **`ERA`** — turns everything on, thaws all layers, unisolates.
 
 ## Notes
 
-- All three dialogs remember their last-picked layer via session globals (`*erc:last-layer*`, `*ers:last-layer*`, `*ert:last-layer*`). Persist until AutoCAD closes.
-- ERS also remembers the Append toggle state (`*ers:last-append*`).
-- Only ERC uses a preset list — ERS and ERT always pull from the current drawing's layer table.
+- ER1, ERS, ERT remember their last-picked layer via session globals; pre-selected in the list next time.
+- ERD stores its "isolated" state in `*erd:isolated*`. ERA also clears it as a safety net.
+- ERL and ERU refuse to touch the current layer (AutoCAD blocks it anyway — the tool just tells you cleanly).
+- All dialogs are generated at runtime into a temp file and cleaned up on close. No `.dcl` maintenance.
