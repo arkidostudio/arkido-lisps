@@ -1,14 +1,14 @@
 ; ============================================================
 ; AKDLayerTools.lsp
 ; Three layer utilities in one file:
-;   SS1 = Set Current Layer    (preset list, re-runs last draw cmd)
-;   SS2 = Select By Layer      (grab all objects on a layer)
-;   SS3 = Move To Layer        (move picked objects to a layer)
+;   ERC = Set Current Layer    (preset list, re-runs last draw cmd)
+;   ERS = Select By Layer      (grab all objects on a layer)
+;   ERT = Move To Layer        (move picked objects to a layer)
 ; Self-contained: no .dcl or config files needed.
 ; ============================================================
 
-;; ---- Edit your SS1 preset layers here ----
-(setq *SS1_Layers*
+;; ---- Edit your ERC preset layers here ----
+(setq *ERC_Layers*
   '(
     "A-WALL"
     "A-DOOR"
@@ -21,10 +21,10 @@
 )
 
 ; ============================================================
-; SS2 - Select By Layer
+; ERS - Select By Layer
 ; ============================================================
 
-(defun c:SS2 (/ laynames rec fn f dcl_id idx choice mode ss
+(defun c:ERS (/ laynames rec fn f dcl_id idx choice mode ss
                 pt1 pt2 presel preList i e appendSel)
 
   ;; Capture any current grip-selection BEFORE the dialog clears it
@@ -43,9 +43,9 @@
     (setq rec (tblnext "LAYER")))
   (setq laynames (acad_strlsort laynames))
 
-  (setq fn (vl-filename-mktemp "ss2.dcl"))
+  (setq fn (vl-filename-mktemp "ers.dcl"))
   (setq f (open fn "w"))
-  (write-line "ss2_dialog : dialog { label = \"Select By Layer\";" f)
+  (write-line "ers_dialog : dialog { label = \"Select By Layer\";" f)
   (write-line " : list_box { key = \"lst\"; width = 40; height = 18; allow_accept = true; }" f)
   (write-line " : button { key = \"append\"; label = \"Append: OFF\"; }" f)
   (write-line " : row {" f)
@@ -56,18 +56,18 @@
   (close f)
 
   (setq dcl_id (load_dialog fn))
-  (if (not (new_dialog "ss2_dialog" dcl_id)) (exit))
+  (if (not (new_dialog "ers_dialog" dcl_id)) (exit))
 
   (start_list "lst")
   (mapcar 'add_list laynames)
   (end_list)
 
   (setq idx "0")
-  (if (and *ss2:last-layer* (member *ss2:last-layer* laynames))
+  (if (and *ers:last-layer* (member *ers:last-layer* laynames))
     (setq idx (itoa (- (length laynames)
-                       (length (member *ss2:last-layer* laynames))))))
+                       (length (member *ers:last-layer* laynames))))))
 
-  (setq appendSel (if *ss2:last-append* "1" "0"))
+  (setq appendSel (if *ers:last-append* "1" "0"))
   (set_tile "append" (if (= appendSel "1") "Append: ON" "Append: OFF"))
 
   (action_tile "append"
@@ -81,14 +81,14 @@
   (mode_tile "lst" 2)
 
   (setq mode (start_dialog))
-  (setq *ss2:last-append* (= appendSel "1"))
+  (setq *ers:last-append* (= appendSel "1"))
   (unload_dialog dcl_id)
   (vl-file-delete fn)
 
   (if (> mode 0)
     (progn
       (setq choice (nth (atoi idx) laynames))
-      (setq *ss2:last-layer* choice)
+      (setq *ers:last-layer* choice)
 
       (cond
         ((= mode 1)
@@ -126,32 +126,32 @@
 )
 
 ; ============================================================
-; SS1 - Set Current Layer (preset list) + re-fire last draw cmd
+; ERC - Set Current Layer (preset list) + re-fire last draw cmd
 ; ============================================================
 
-(defun c:SS1 (/ fn f dcl_id idx selected lastcmd)
+(defun c:ERC (/ fn f dcl_id idx selected lastcmd)
 
-  (if (not *SS1_Layers*)
-    (progn (alert "No layers defined in *SS1_Layers*.") (exit)))
+  (if (not *ERC_Layers*)
+    (progn (alert "No layers defined in *ERC_Layers*.") (exit)))
 
-  (setq fn (vl-filename-mktemp "ss1.dcl"))
+  (setq fn (vl-filename-mktemp "erc.dcl"))
   (setq f (open fn "w"))
-  (write-line "ss1_dialog : dialog { label = \"Set Current Layer\";" f)
+  (write-line "erc_dialog : dialog { label = \"Set Current Layer\";" f)
   (write-line " : list_box { key = \"lst\"; width = 30; height = 15; allow_accept = true; }" f)
   (write-line " spacer; ok_cancel; }" f)
   (close f)
 
   (setq dcl_id (load_dialog fn))
-  (if (not (new_dialog "ss1_dialog" dcl_id)) (exit))
+  (if (not (new_dialog "erc_dialog" dcl_id)) (exit))
 
   (start_list "lst")
-  (mapcar 'add_list *SS1_Layers*)
+  (mapcar 'add_list *ERC_Layers*)
   (end_list)
 
   (setq idx "0")
-  (if (and *ss1:last-layer* (member *ss1:last-layer* *SS1_Layers*))
-    (setq idx (itoa (- (length *SS1_Layers*)
-                       (length (member *ss1:last-layer* *SS1_Layers*))))))
+  (if (and *erc:last-layer* (member *erc:last-layer* *ERC_Layers*))
+    (setq idx (itoa (- (length *ERC_Layers*)
+                       (length (member *erc:last-layer* *ERC_Layers*))))))
 
   (action_tile "lst"    "(setq idx $value)(if (= $reason 4) (done_dialog 1))")
   (action_tile "accept" "(done_dialog 1)")
@@ -161,14 +161,14 @@
   (mode_tile "lst" 2)
 
   (if (= (start_dialog) 1)
-    (setq selected (nth (atoi idx) *SS1_Layers*)))
+    (setq selected (nth (atoi idx) *ERC_Layers*)))
 
   (unload_dialog dcl_id)
   (vl-file-delete fn)
 
   (if selected
     (progn
-      (setq *ss1:last-layer* selected)
+      (setq *erc:last-layer* selected)
       (setvar "CLAYER" selected)
       (princ (strcat "\nCurrent layer set to: " selected))
       (setq lastcmd (getvar "CMDNAMES"))
@@ -187,10 +187,10 @@
 )
 
 ; ============================================================
-; SS3 - Move Selected Objects To Layer (all drawing layers)
+; ERT - Move Selected Objects To Layer (all drawing layers)
 ; ============================================================
 
-(defun c:SS3 (/ layer_list rec fn f dcl_id idx selected ss i ent)
+(defun c:ERT (/ layer_list rec fn f dcl_id idx selected ss i ent)
 
   (setq layer_list '())
   (setq rec (tblnext "LAYER" T))
@@ -202,25 +202,25 @@
   (if (not layer_list)
     (progn (alert "No layers in drawing.") (exit)))
 
-  (setq fn (vl-filename-mktemp "ss3.dcl"))
+  (setq fn (vl-filename-mktemp "ert.dcl"))
   (setq f (open fn "w"))
-  (write-line "ss3_dialog : dialog { label = \"Move To Layer\";" f)
+  (write-line "ert_dialog : dialog { label = \"Move To Layer\";" f)
   (write-line " : text { label = \"Double-click to apply\"; }" f)
   (write-line " : list_box { key = \"lst\"; width = 30; height = 12; allow_accept = true; }" f)
   (write-line " spacer; ok_cancel; }" f)
   (close f)
 
   (setq dcl_id (load_dialog fn))
-  (if (not (new_dialog "ss3_dialog" dcl_id)) (exit))
+  (if (not (new_dialog "ert_dialog" dcl_id)) (exit))
 
   (start_list "lst")
   (mapcar 'add_list layer_list)
   (end_list)
 
   (setq idx "0")
-  (if (and *ss3:last-layer* (member *ss3:last-layer* layer_list))
+  (if (and *ert:last-layer* (member *ert:last-layer* layer_list))
     (setq idx (itoa (- (length layer_list)
-                       (length (member *ss3:last-layer* layer_list))))))
+                       (length (member *ert:last-layer* layer_list))))))
 
   (action_tile "lst"    "(setq idx $value)(if (= $reason 4) (done_dialog 1))")
   (action_tile "accept" "(done_dialog 1)")
@@ -237,7 +237,7 @@
 
   (if selected
     (progn
-      (setq *ss3:last-layer* selected)
+      (setq *ert:last-layer* selected)
       (prompt (strcat "\nMoving to layer: " selected))
       (setq ss (ssget))
       (if ss
@@ -257,5 +257,5 @@
   (princ)
 )
 
-(princ "\nAKDLayerTools loaded. Commands: SS1  SS2  SS3")
+(princ "\nAKDLayerTools loaded. Commands: ERC  ERS  ERT")
 (princ)
