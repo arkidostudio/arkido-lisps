@@ -63,7 +63,9 @@
     (if (= (strcase u) "0")
       nil
       (strcat
-        "{\\C" col ";\\H" (rtos h 2 0) ";"
+        "{\\C" col ";"
+        "\\f" fontname ";"
+        "\\H" (rtos h 2 0) ";"
         (rtos v 2 dec) " " (strcase u)
         "}"
       )
@@ -76,10 +78,34 @@
 
   (setq lisp-full-path (findfile "AKDHatchToLabel.lsp"))
 
-  (if lisp-full-path
-    (setq settings-path
-      (strcat (vl-filename-directory lisp-full-path) "/AKDHatchToLabel_Settings.txt"))
-    (setq settings-path "AKDHatchToLabel_Settings.txt")
+  (cond
+    ;; 1. Remembered path from a previous run
+    ((and (getenv "AKDHATCH_SETTINGS")
+          (findfile (getenv "AKDHATCH_SETTINGS")))
+      (setq settings-path (getenv "AKDHATCH_SETTINGS")))
+
+    ;; 2. Next to the LISP file (if AutoCAD can locate the LISP)
+    (lisp-full-path
+      (setq settings-path
+        (strcat (vl-filename-directory lisp-full-path)
+                "/AKDHatchToLabel_Settings.txt")))
+
+    ;; 3. Anywhere on AutoCAD's support-file search path
+    ((findfile "AKDHatchToLabel_Settings.txt")
+      (setq settings-path (findfile "AKDHatchToLabel_Settings.txt")))
+
+    ;; 4. Ask the user once, then remember it
+    (T
+      (prompt "\n[HATX] Settings file not found. Pick AKDHatchToLabel_Settings.txt...")
+      (setq settings-path (getfiled "Locate AKDHatchToLabel_Settings.txt" "" "txt" 0))
+      (if settings-path (setenv "AKDHATCH_SETTINGS" settings-path)))
+  )
+
+  (if (not (and settings-path (findfile settings-path)))
+    (prompt
+      (strcat
+        "\n[HATX] WARNING: no settings file loaded — using hardcoded defaults "
+        "(BED/BAL/TOI only)."))
   )
 
   ;; ==================================================
