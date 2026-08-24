@@ -380,9 +380,9 @@
     '((0 . "LINE,ARC,LWPOLYLINE,POLYLINE,CIRCLE"))))
 
 (defun sb:set-walls ( / ans ss i l lays)
-  (initget "Pick All")
+  (initget "Pick Type All")
   (setq ans (getkword
-              (strcat "\nWall layers - [Pick objects/All] <"
+              (strcat "\nWall layers - [Pick objects/Type name/All] <"
                       (if *sb-wall-layers*
                         (apply 'strcat
                           (cdr (apply 'append
@@ -395,6 +395,12 @@
     ((= ans "All")
      (setq *sb-wall-layers* nil)
      (princ "\nAll layers considered."))
+    ((= ans "Type")
+     (setq l (getstring T "\nWall layer name: "))
+     (if (and l (/= l ""))
+       (progn
+         (setq *sb-wall-layers* (list l))
+         (princ (strcat "\nWall layer set: " l ".")))))
     ((= ans "Pick")
      (princ "\nSelect one or more wall objects: ")
      (setq ss (ssget))
@@ -446,6 +452,11 @@
   ;; wipe any leftover bridges from a crashed prior run
   (if (setq stale (ssget "_X" '((8 . "SB_TEMP"))))
     (command "_.ERASE" stale ""))
+  ;; first run this session: prompt for wall layer
+  (if (not *sb-wall-layers*)
+    (progn
+      (princ "\nWall layer not set - restricting analysis avoids catching doors/arcs.")
+      (sb:set-walls)))
   (setq opt T)
   (while opt
     (initget "Gap Layer Walls")

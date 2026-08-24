@@ -5,8 +5,9 @@ An AutoCAD LISP that behaves like `BOUNDARY` (`BO`) but bridges small gaps — d
 ## Commands
 
 - **`SB`** — auto mode. Pick an internal point, SB detects openings and bridges them, then runs `BOUNDARY`.
-  - `Walls` option (or type `W`) — restrict analysis to specific layers so door frames, panels, swing arcs, furniture, dimensions etc. are ignored:
+  - `Walls` option (or type `W`) — restrict analysis to specific layers so door frames, panels, swing arcs, furniture, dimensions etc. are ignored. If wall layers aren't set yet, SB prompts for them automatically the first time you run it:
     - `P` **Pick** — select one or more wall objects; their layers become the wall filter.
+    - `T` **Type** — enter a wall layer name.
     - `A` **All** — clear the filter (analyze every layer).
   - `Gap` option — change the max opening width bridged.
   - `Layer` option (or type `L`) — set the layer new boundaries are placed on:
