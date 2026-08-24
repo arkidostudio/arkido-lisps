@@ -22,6 +22,7 @@
 (setq *sb-fuzz*  0.5)     ; endpoints closer than this are "already connected"
 (setq *sb-align* 0.85)    ; min |cos(angle)| between bridge dir and wall tangent
 (setq *sb-cap-max* 300.0) ; max length of a "cap" line (wall thickness)
+(setq *sb-gap-min* 500.0) ; min opening width - shorter candidate bridges rejected
 (setq *sb-out-layer* "X-AREA BOUNDARY") ; output layer for boundaries; nil = current layer
 (setq *sb-wall-layers* nil) ; list of wall layers to analyze; nil = all layers
 
@@ -203,7 +204,7 @@
                  (not (member c2 used))
                  (> (abs (sb:dot (cadddr c1) (cadddr c2))) 0.9)
                  (<= (distance (caddr c1) (caddr c2)) gap)
-                 (> (distance (caddr c1) (caddr c2)) 1.0))
+                 (>= (distance (caddr c1) (caddr c2)) *sb-gap-min*))
           (progn
             (setq mid-dir (sb:unit (sb:sub (caddr c2) (caddr c1))))
             (if (< (abs (sb:dot mid-dir (cadddr c1))) 0.2)
