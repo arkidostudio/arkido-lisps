@@ -288,20 +288,6 @@
             (setq new (subst (cons 8 lay) (assoc 8 e) e))
             (entmod new)))))))
 
-(defun sb:manual-bridges ( / p1 p2 out en)
-  (setq out nil)
-  (sb:ensure-temp-layer)
-  (princ "\nManual bridging - click TWO points to bridge each opening. Enter to finish.")
-  (while (setq p1 (getpoint "\nBridge start (Enter to finish): "))
-    (setq p2 (getpoint p1 "\nBridge end: "))
-    (if p2
-      (progn
-        (setq en (entmakex
-                   (list '(0 . "LINE") '(8 . "SB_TEMP")
-                         (cons 10 p1) (cons 11 p2))))
-        (if en (setq out (cons en out))))))
-  out)
-
 (defun sb:run-boundary-and-report (pt temp / before after new i en frozen)
   (setq before (ssget "_X" '((0 . "LWPOLYLINE"))))
   (setq frozen (sb:freeze-non-wall))
@@ -323,20 +309,6 @@
                  (if *sb-out-layer*
                    (strcat " on layer " *sb-out-layer*) "") "."))
   new)
-
-(defun c:SBM ( / temp pt stale)
-  (princ "\nSmart Boundary Manual")
-  (if (setq stale (ssget "_X" '((8 . "SB_TEMP"))))
-    (command "_.ERASE" stale ""))
-  (setq temp (sb:manual-bridges))
-  (if temp
-    (progn
-      (setq pt (getpoint "\nPick internal point: "))
-      (if pt
-        (sb:run-boundary-and-report pt temp)
-        (sb:cleanup temp)))
-    (princ "\nNo bridges drawn."))
-  (princ))
 
 ;; -- freeze non-wall layers around a BOUNDARY call -------------------------
 
@@ -517,5 +489,5 @@
                           ".")))))))
   (princ))
 
-(princ "\nSmartBoundary loaded. SB = auto, SBM = manual bridges.")
+(princ "\nSmartBoundary loaded. Type SB to run.")
 (princ)

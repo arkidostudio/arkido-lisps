@@ -14,7 +14,6 @@ An AutoCAD LISP that behaves like `BOUNDARY` (`BO`) but bridges small gaps — d
     - `P` **Pick** — click any object and its layer is used.
     - `T` **Type** — enter a layer name (created if missing).
     - `C` **Current** — reset to the current layer.
-- **`SBM`** — manual mode. Click pairs of points across each opening, pick the internal point, SB bridges and runs `BOUNDARY`. Also respects the output layer set via `SB`'s `Layer` option, or `(setq *sb-out-layer* "MYLAYER")`.
 
 ## Install
 
@@ -56,15 +55,6 @@ Change from the command line:
 (setq *sb-gap* 1500)
 (setq *sb-cap-max* 200)
 ```
-
-## Manual mode (`SBM`)
-
-Falls back to hand-picked bridges when auto detection can't handle the geometry:
-
-1. Type `SBM`.
-2. Click two points to define each bridge (use OSNAP endpoint / intersection). Enter to finish.
-3. Click the internal point.
-4. SB draws the bridges, runs `BOUNDARY`, cleans up.
 
 ## Notes / limitations
 
