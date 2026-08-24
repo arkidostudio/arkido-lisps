@@ -23,6 +23,7 @@
 (setq *sb-align* 0.85)    ; min |cos(angle)| between bridge dir and wall tangent
 (setq *sb-cap-max* 300.0) ; max length of a "cap" line (wall thickness)
 (setq *sb-out-layer* nil) ; output layer for boundaries; nil = current layer
+(setq *sb-wall-layers* nil) ; list of wall layers to analyze; nil = all layers
 
 ;; -- helpers ---------------------------------------------------------------
 
@@ -335,6 +336,50 @@
     (princ "\nNo bridges drawn."))
   (princ))
 
+;; -- wall layer selection --------------------------------------------------
+
+(defun sb:layer-filter ()
+  (if *sb-wall-layers*
+    (list (cons 0 "LINE,ARC,LWPOLYLINE,POLYLINE,CIRCLE")
+          (cons 8
+                (apply 'strcat
+                  (cdr (apply 'append
+                    (mapcar '(lambda (l) (list "," l)) *sb-wall-layers*))))))
+    '((0 . "LINE,ARC,LWPOLYLINE,POLYLINE,CIRCLE"))))
+
+(defun sb:set-walls ( / ans ss i l lays)
+  (initget "Pick All")
+  (setq ans (getkword
+              (strcat "\nWall layers - [Pick objects/All] <"
+                      (if *sb-wall-layers*
+                        (apply 'strcat
+                          (cdr (apply 'append
+                            (mapcar '(lambda (l) (list "," l))
+                                    *sb-wall-layers*))))
+                        "all")
+                      ">: ")))
+  (cond
+    ((null ans) nil)
+    ((= ans "All")
+     (setq *sb-wall-layers* nil)
+     (princ "\nAll layers considered."))
+    ((= ans "Pick")
+     (princ "\nSelect one or more wall objects: ")
+     (setq ss (ssget))
+     (if ss
+       (progn
+         (setq i 0 lays nil)
+         (while (< i (sslength ss))
+           (setq l (cdr (assoc 8 (entget (ssname ss i)))))
+           (if (not (member l lays)) (setq lays (cons l lays)))
+           (setq i (1+ i)))
+         (setq *sb-wall-layers* lays)
+         (princ (strcat "\nWall layers set: "
+                        (apply 'strcat
+                          (cdr (apply 'append
+                            (mapcar '(lambda (l) (list ", " l)) lays))))
+                        ".")))))))
+
 ;; -- layer selection -------------------------------------------------------
 
 (defun sb:set-layer ( / ans e l)
@@ -371,8 +416,8 @@
     (command "_.ERASE" stale ""))
   (setq opt T)
   (while opt
-    (initget "Gap Layer")
-    (setq pt (getpoint (strcat "\nPick internal point [Gap/Layer] <exit>: ")))
+    (initget "Gap Layer Walls")
+    (setq pt (getpoint (strcat "\nPick internal point [Gap/Layer/Walls] <exit>: ")))
     (cond
       ((null pt) (setq opt nil))
       ((= pt "Gap")
@@ -380,13 +425,14 @@
                                 (rtos *sb-gap* 2 2) ">: ")))
        (if g (setq *sb-gap* g)))
       ((= pt "Layer") (sb:set-layer))
+      ((= pt "Walls") (sb:set-walls))
       (T
        ;; select curves in a generous window around pt
        (setq r (* *sb-gap* 20.0)  ; search radius (~room-sized)
              ss (ssget "_C"
                        (list (- (car pt) r) (- (cadr pt) r))
                        (list (+ (car pt) r) (+ (cadr pt) r))
-                       '((0 . "LINE,ARC,LWPOLYLINE,POLYLINE,CIRCLE"))))
+                       (sb:layer-filter)))
        (if (null ss)
          (princ "\nNo curves found near pick point.")
          (progn

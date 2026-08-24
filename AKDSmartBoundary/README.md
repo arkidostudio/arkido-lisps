@@ -5,6 +5,9 @@ An AutoCAD LISP that behaves like `BOUNDARY` (`BO`) but bridges small gaps — d
 ## Commands
 
 - **`SB`** — auto mode. Pick an internal point, SB detects openings and bridges them, then runs `BOUNDARY`.
+  - `Walls` option (or type `W`) — restrict analysis to specific layers so door frames, panels, swing arcs, furniture, dimensions etc. are ignored:
+    - `P` **Pick** — select one or more wall objects; their layers become the wall filter.
+    - `A` **All** — clear the filter (analyze every layer).
   - `Gap` option — change the max opening width bridged.
   - `Layer` option (or type `L`) — set the layer new boundaries are placed on:
     - `P` **Pick** — click any object and its layer is used.
@@ -44,6 +47,7 @@ Temp bridges are drawn on layer `SB_TEMP` in red, `BOUNDARY` runs, then the temp
 | `*sb-cap-max*`  | `300`   | Max length considered a wall-thickness cap. |
 | `*sb-keep*`     | `nil`   | Set `T` to leave temp bridges visible for debugging. |
 | `*sb-out-layer*`| `nil`   | Layer for created boundaries. `nil` = current layer. |
+| `*sb-wall-layers*`| `nil` | List of wall layers to analyze. `nil` = all layers. |
 
 Change from the command line:
 
