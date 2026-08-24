@@ -41,6 +41,12 @@ When wall layers are set, SB **freezes every other layer** (except current, `SB_
 | `*sb-wall-layers*` | `nil` | list of wall layers; `nil` = all |
 | `*sb-keep*` | `nil` | `T` = leave temp bridges visible for debugging |
 
+## Debug switch
+`(setq *sb-debug* T)` — keeps bridges visible, numbers them with TEXT labels on SB_TEMP, dumps `#N len= a=(x,y) b=(x,y)` per bridge, skips freeze+BOUNDARY. Turn off with `nil`.
+
+## Freeze is required — do NOT remove it
+`sb:freeze-non-wall` looks fragile (swaps CLAYER, layer name has a space) but it's what makes `-BOUNDARY` prefer wall+SB_TEMP over door arcs. Without it, boundary traces around doors instead of across the bridges. If it appears to break `-BOUNDARY` ("Valid hatch boundary not found"), suspect stale frozen layers from a crashed prior run — thaw all with `(command "_.-LAYER" "_T" "*" "")` before assuming the code is broken.
+
 ## Current status / open issue
 Last iteration on a real floor plan with window openings between wall segments produced **24 bridges** on a room with maybe ~6 real openings. Some real bridges detected (D1 door corners), but the cap detector also created degenerate short bridges at wall corners and bridges between adjacent window mullions.
 

@@ -18,13 +18,14 @@
 
 ;; Pure AutoLISP - no vl-load-com / vlax-* (Mac-safe)
 
-(setq *sb-gap*   1000.0)  ; default max gap width (drawing units, e.g. mm)
+(setq *sb-gap*   3000.0)  ; default max gap width (drawing units, e.g. mm)
 (setq *sb-fuzz*  0.5)     ; endpoints closer than this are "already connected"
 (setq *sb-align* 0.85)    ; min |cos(angle)| between bridge dir and wall tangent
 (setq *sb-cap-max* 300.0) ; max length of a "cap" line (wall thickness)
 (setq *sb-gap-min* 500.0) ; min opening width - shorter candidate bridges rejected
 (setq *sb-out-layer* "X-AREA BOUNDARY") ; output layer for boundaries; nil = current layer
 (setq *sb-wall-layers* nil) ; list of wall layers to analyze; nil = all layers
+(setq *sb-debug* nil)       ; T = keep bridges, label them, skip freeze, dump coords
 
 ;; -- helpers ---------------------------------------------------------------
 
@@ -254,21 +255,38 @@
             (setq used (cons (car best) used)))))))
   bridges)
 
-(defun sb:draw-bridges (bridges / out)
-  (setq out nil)
+(defun sb:draw-bridges (bridges / out i a b mid len h)
+  (setq out nil i 1)
   (foreach br bridges
+    (setq a (car br) b (cadr br)
+          mid (list (/ (+ (car a) (car b)) 2.0)
+                    (/ (+ (cadr a) (cadr b)) 2.0) 0.0)
+          len (distance a b))
     (setq out
       (cons
         (entmakex
-          (list '(0 . "LINE")
-                '(8 . "SB_TEMP")
-                (cons 10 (car br))
-                (cons 11 (cadr br))))
-        out)))
+          (list '(0 . "LINE") '(8 . "SB_TEMP")
+                (cons 10 a) (cons 11 b)))
+        out))
+    (if *sb-debug*
+      (progn
+        (setq h (max 50.0 (* 0.05 len)))
+        (setq out
+          (cons
+            (entmakex
+              (list '(0 . "TEXT") '(8 . "SB_TEMP")
+                    (cons 10 mid) (cons 40 h)
+                    (cons 1 (itoa i))))
+            out))
+        (princ (strcat "\n  #" (itoa i)
+                       "  len=" (rtos len 2 1)
+                       "  a=(" (rtos (car a) 2 1) "," (rtos (cadr a) 2 1) ")"
+                       "  b=(" (rtos (car b) 2 1) "," (rtos (cadr b) 2 1) ")"))
+        (setq i (1+ i)))))
   out)
 
 (defun sb:cleanup (temp-enames / )
-  (if (not *sb-keep*)
+  (if (and (not *sb-keep*) (not *sb-debug*))
     (foreach en temp-enames
       (if (and en (entget en)) (entdel en)))))
 
@@ -278,11 +296,17 @@
   (if (not (tblsearch "LAYER" "SB_TEMP"))
     (command "_.-LAYER" "_N" "SB_TEMP" "_C" "1" "SB_TEMP" "")))
 
+(defun sb:ensure-out-layer (lay)
+  (if (and lay (not (tblsearch "LAYER" lay)))
+    (command "_.-LAYER" "_N" lay "_C" "11" lay "")))
+
 (defun sb:move-to-layer (enames lay / en e new)
   (if (and lay enames)
     (progn
-      (if (not (tblsearch "LAYER" lay))
-        (command "_.-LAYER" "_N" lay ""))
+      (if (equal lay *sb-out-layer*)
+        (sb:ensure-out-layer lay)
+        (if (not (tblsearch "LAYER" lay))
+          (command "_.-LAYER" "_N" lay "")))
       (foreach en enames
         (if (and en (setq e (entget en)))
           (progn
@@ -329,8 +353,10 @@
       ;; switch current layer to something safe so we can freeze the original
       (setq *sb-saved-clayer* (getvar "CLAYER"))
       (setq safe (cond (*sb-out-layer*) ((car *sb-wall-layers*)) ("0")))
-      (if (not (tblsearch "LAYER" safe))
-        (command "_.-LAYER" "_N" safe ""))
+      (if (equal safe *sb-out-layer*)
+        (sb:ensure-out-layer safe)
+        (if (not (tblsearch "LAYER" safe))
+          (command "_.-LAYER" "_N" safe "")))
       (setvar "CLAYER" safe)
       (setq cur   safe
             keep  (append (list cur "SB_TEMP") *sb-wall-layers*
@@ -458,6 +484,7 @@
       ((= pt "Layer") (sb:set-layer))
       ((= pt "Walls") (sb:set-walls))
       (T
+       (command "_.UNDO" "_BE")
        ;; select curves in a generous window around pt
        (setq r (* *sb-gap* 20.0)  ; search radius (~room-sized)
              ss (ssget "_C"
@@ -481,9 +508,12 @@
            (setq temp (sb:draw-bridges bridges))
            ;; snapshot polylines before
            (setq before (ssget "_X" '((0 . "LWPOLYLINE"))))
-           (setq frozen (sb:freeze-non-wall))
-           (command "_.-BOUNDARY" pt "")
-           (if frozen (sb:thaw frozen))
+           (if *sb-debug*
+             (princ "\n  [debug] skipping freeze + BOUNDARY. Inspect SB_TEMP.")
+             (progn
+               (setq frozen (sb:freeze-non-wall))
+               (command "_.-BOUNDARY" pt "")
+               (if frozen (sb:thaw frozen))))
            (setq after (ssget "_X" '((0 . "LWPOLYLINE"))))
            ;; find new pline(s)
            (setq new nil)
@@ -502,7 +532,8 @@
                           " boundary polyline(s)"
                           (if *sb-out-layer*
                             (strcat " on layer " *sb-out-layer*) "")
-                          ".")))))))
+                          "."))))
+       (command "_.UNDO" "_E"))))
   (princ))
 
 (princ "\nSmartBoundary loaded. Type SB to run.")
