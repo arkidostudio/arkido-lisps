@@ -46,7 +46,7 @@ Temp bridges are drawn on layer `SB_TEMP` in red, `BOUNDARY` runs, then the temp
 | `*sb-align*`    | `0.85`  | Min `|cos θ|` between bridge direction and wall tangent (free-endpoint detector). Lower = more permissive. |
 | `*sb-cap-max*`  | `300`   | Max length considered a wall-thickness cap. |
 | `*sb-keep*`     | `nil`   | Set `T` to leave temp bridges visible for debugging. |
-| `*sb-out-layer*`| `nil`   | Layer for created boundaries. `nil` = current layer. |
+| `*sb-out-layer*`| `"X-AREA BOUNDARY"` | Layer for created boundaries. `nil` = use current layer. Change the string at the top of the .lsp to set a different default. |
 | `*sb-wall-layers*`| `nil` | List of wall layers to analyze. `nil` = all layers. |
 
 Change from the command line:

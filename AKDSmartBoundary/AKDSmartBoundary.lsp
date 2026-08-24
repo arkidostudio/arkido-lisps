@@ -22,7 +22,7 @@
 (setq *sb-fuzz*  0.5)     ; endpoints closer than this are "already connected"
 (setq *sb-align* 0.85)    ; min |cos(angle)| between bridge dir and wall tangent
 (setq *sb-cap-max* 300.0) ; max length of a "cap" line (wall thickness)
-(setq *sb-out-layer* nil) ; output layer for boundaries; nil = current layer
+(setq *sb-out-layer* "X-AREA BOUNDARY") ; output layer for boundaries; nil = current layer
 (setq *sb-wall-layers* nil) ; list of wall layers to analyze; nil = all layers
 
 ;; -- helpers ---------------------------------------------------------------
