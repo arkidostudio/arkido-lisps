@@ -340,14 +340,14 @@
 
 ;; -- freeze non-wall layers around a BOUNDARY call -------------------------
 
-(defun sb:all-layer-names ( / t out)
-  (setq out nil t (tblnext "LAYER" T))
-  (while t
-    (setq out (cons (cdr (assoc 2 t)) out))
-    (setq t (tblnext "LAYER")))
+(defun sb:all-layer-names ( / rec out)
+  (setq out nil rec (tblnext "LAYER" T))
+  (while rec
+    (setq out (cons (cdr (assoc 2 rec)) out))
+    (setq rec (tblnext "LAYER")))
   out)
 
-(defun sb:freeze-non-wall ( / cur keep frozen name)
+(defun sb:freeze-non-wall ( / cur keep frozen name lrec)
   (setq frozen nil)
   (if (not *sb-wall-layers*) nil
     (progn
