@@ -22,6 +22,7 @@
 (setq *sb-fuzz*  0.5)     ; endpoints closer than this are "already connected"
 (setq *sb-align* 0.85)    ; min |cos(angle)| between bridge dir and wall tangent
 (setq *sb-cap-max* 300.0) ; max length of a "cap" line (wall thickness)
+(setq *sb-out-layer* nil) ; output layer for boundaries; nil = current layer
 
 ;; -- helpers ---------------------------------------------------------------
 
@@ -275,6 +276,17 @@
   (if (not (tblsearch "LAYER" "SB_TEMP"))
     (command "_.-LAYER" "_N" "SB_TEMP" "_C" "1" "SB_TEMP" "")))
 
+(defun sb:move-to-layer (enames lay / en e new)
+  (if (and lay enames)
+    (progn
+      (if (not (tblsearch "LAYER" lay))
+        (command "_.-LAYER" "_N" lay ""))
+      (foreach en enames
+        (if (and en (setq e (entget en)))
+          (progn
+            (setq new (subst (cons 8 lay) (assoc 8 e) e))
+            (entmod new)))))))
+
 (defun sb:manual-bridges ( / p1 p2 out en)
   (setq out nil)
   (sb:ensure-temp-layer)
@@ -303,7 +315,10 @@
           (setq new (cons en new)))
         (setq i (1+ i)))))
   (sb:cleanup temp)
-  (princ (strcat "\nCreated " (itoa (length new)) " boundary polyline(s)."))
+  (if *sb-out-layer* (sb:move-to-layer new *sb-out-layer*))
+  (princ (strcat "\nCreated " (itoa (length new)) " boundary polyline(s)"
+                 (if *sb-out-layer*
+                   (strcat " on layer " *sb-out-layer*) "") "."))
   new)
 
 (defun c:SBM ( / temp pt stale)
@@ -330,14 +345,25 @@
     (command "_.ERASE" stale ""))
   (setq opt T)
   (while opt
-    (initget "Gap")
-    (setq pt (getpoint (strcat "\nPick internal point [Gap] <exit>: ")))
+    (initget "Gap Layer")
+    (setq pt (getpoint (strcat "\nPick internal point [Gap/Layer] <exit>: ")))
     (cond
       ((null pt) (setq opt nil))
       ((= pt "Gap")
        (setq g (getdist (strcat "\nMax gap width <"
                                 (rtos *sb-gap* 2 2) ">: ")))
        (if g (setq *sb-gap* g)))
+      ((= pt "Layer")
+       (setq l (getstring T
+                 (strcat "\nOutput layer for boundary <"
+                         (if *sb-out-layer* *sb-out-layer* "current")
+                         "> (. = current): ")))
+       (cond
+         ((= l "") nil)
+         ((= l ".") (setq *sb-out-layer* nil)
+          (princ "\nBoundaries will be created on current layer."))
+         (T (setq *sb-out-layer* l)
+            (princ (strcat "\nBoundaries will go to layer " l ".")))))
       (T
        ;; select curves in a generous window around pt
        (setq r (* *sb-gap* 20.0)  ; search radius (~room-sized)
@@ -376,7 +402,12 @@
                    (setq new (cons en new)))
                  (setq i (1+ i)))))
            (sb:cleanup temp)
-           (princ (strcat "\nCreated " (itoa (length new)) " boundary polyline(s).")))))))
+           (if *sb-out-layer* (sb:move-to-layer new *sb-out-layer*))
+           (princ (strcat "\nCreated " (itoa (length new))
+                          " boundary polyline(s)"
+                          (if *sb-out-layer*
+                            (strcat " on layer " *sb-out-layer*) "")
+                          ".")))))))
   (princ))
 
 (princ "\nSmartBoundary loaded. SB = auto, SBM = manual bridges.")

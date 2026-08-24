@@ -5,7 +5,9 @@ An AutoCAD LISP that behaves like `BOUNDARY` (`BO`) but bridges small gaps — d
 ## Commands
 
 - **`SB`** — auto mode. Pick an internal point, SB detects openings and bridges them, then runs `BOUNDARY`.
-- **`SBM`** — manual mode. Click pairs of points across each opening, pick the internal point, SB bridges and runs `BOUNDARY`.
+  - `Gap` option — change the max opening width bridged.
+  - `Layer` option — set the layer new boundaries are placed on (created if missing). Enter `.` to reset to current layer.
+- **`SBM`** — manual mode. Click pairs of points across each opening, pick the internal point, SB bridges and runs `BOUNDARY`. Also respects the output layer set via `SB`'s `Layer` option, or `(setq *sb-out-layer* "MYLAYER")`.
 
 ## Install
 
@@ -38,6 +40,7 @@ Temp bridges are drawn on layer `SB_TEMP` in red, `BOUNDARY` runs, then the temp
 | `*sb-align*`    | `0.85`  | Min `|cos θ|` between bridge direction and wall tangent (free-endpoint detector). Lower = more permissive. |
 | `*sb-cap-max*`  | `300`   | Max length considered a wall-thickness cap. |
 | `*sb-keep*`     | `nil`   | Set `T` to leave temp bridges visible for debugging. |
+| `*sb-out-layer*`| `nil`   | Layer for created boundaries. `nil` = current layer. |
 
 Change from the command line:
 
