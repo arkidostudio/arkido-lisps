@@ -319,11 +319,19 @@
     (setq rec (tblnext "LAYER")))
   out)
 
-(defun sb:freeze-non-wall ( / cur keep frozen name lrec)
+(setq *sb-saved-clayer* nil)
+
+(defun sb:freeze-non-wall ( / cur safe keep frozen name lrec)
   (setq frozen nil)
   (if (not *sb-wall-layers*) nil
     (progn
-      (setq cur   (getvar "CLAYER")
+      ;; switch current layer to something safe so we can freeze the original
+      (setq *sb-saved-clayer* (getvar "CLAYER"))
+      (setq safe (cond (*sb-out-layer*) ((car *sb-wall-layers*)) ("0")))
+      (if (not (tblsearch "LAYER" safe))
+        (command "_.-LAYER" "_N" safe ""))
+      (setvar "CLAYER" safe)
+      (setq cur   safe
             keep  (append (list cur "SB_TEMP") *sb-wall-layers*
                           (if *sb-out-layer* (list *sb-out-layer*) nil)))
       (foreach name (sb:all-layer-names)
@@ -342,7 +350,10 @@
 
 (defun sb:thaw (names)
   (foreach n names
-    (command "_.-LAYER" "_T" n "")))
+    (command "_.-LAYER" "_T" n ""))
+  (if *sb-saved-clayer*
+    (progn (setvar "CLAYER" *sb-saved-clayer*)
+           (setq *sb-saved-clayer* nil))))
 
 ;; -- wall layer selection --------------------------------------------------
 
