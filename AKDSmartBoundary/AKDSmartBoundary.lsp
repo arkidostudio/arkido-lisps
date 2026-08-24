@@ -328,12 +328,16 @@
                           (if *sb-out-layer* (list *sb-out-layer*) nil)))
       (foreach name (sb:all-layer-names)
         (if (and (not (member name keep))
-                 ;; only freeze layers that are currently thawed & on
                  (setq lrec (tblsearch "LAYER" name))
                  (= 0 (logand 1 (cdr (assoc 70 lrec)))))
           (progn
             (command "_.-LAYER" "_F" name "")
-            (setq frozen (cons name frozen)))))))
+            (setq frozen (cons name frozen)))))
+      (princ (strcat "\n  Kept visible: "
+                     (apply 'strcat
+                       (cdr (apply 'append
+                         (mapcar '(lambda (x) (list "," x)) keep))))))
+      (princ (strcat "\n  Froze " (itoa (length frozen)) " layer(s)."))))
   frozen)
 
 (defun sb:thaw (names)
