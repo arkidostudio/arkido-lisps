@@ -6,7 +6,10 @@ An AutoCAD LISP that behaves like `BOUNDARY` (`BO`) but bridges small gaps — d
 
 - **`SB`** — auto mode. Pick an internal point, SB detects openings and bridges them, then runs `BOUNDARY`.
   - `Gap` option — change the max opening width bridged.
-  - `Layer` option — set the layer new boundaries are placed on (created if missing). Enter `.` to reset to current layer.
+  - `Layer` option (or type `L`) — set the layer new boundaries are placed on:
+    - `P` **Pick** — click any object and its layer is used.
+    - `T` **Type** — enter a layer name (created if missing).
+    - `C` **Current** — reset to the current layer.
 - **`SBM`** — manual mode. Click pairs of points across each opening, pick the internal point, SB bridges and runs `BOUNDARY`. Also respects the output layer set via `SB`'s `Layer` option, or `(setq *sb-out-layer* "MYLAYER")`.
 
 ## Install

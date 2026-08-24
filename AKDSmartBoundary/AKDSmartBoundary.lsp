@@ -335,6 +335,32 @@
     (princ "\nNo bridges drawn."))
   (princ))
 
+;; -- layer selection -------------------------------------------------------
+
+(defun sb:set-layer ( / ans e l)
+  (initget "Pick Current Type")
+  (setq ans (getkword
+              (strcat "\nBoundary layer - [Pick object/Type name/Current] <"
+                      (if *sb-out-layer* *sb-out-layer* "current") ">: ")))
+  (cond
+    ((null ans) nil)
+    ((= ans "Current")
+     (setq *sb-out-layer* nil)
+     (princ "\nBoundaries will use current layer."))
+    ((= ans "Pick")
+     (setq e (entsel "\nPick object on target layer: "))
+     (if e
+       (progn
+         (setq l (cdr (assoc 8 (entget (car e)))))
+         (setq *sb-out-layer* l)
+         (princ (strcat "\nBoundaries will go to layer " l ".")))))
+    ((= ans "Type")
+     (setq l (getstring T "\nLayer name: "))
+     (if (and l (/= l ""))
+       (progn
+         (setq *sb-out-layer* l)
+         (princ (strcat "\nBoundaries will go to layer " l ".")))))))
+
 ;; -- main ------------------------------------------------------------------
 
 (defun c:SB ( / pt ss eps bridges temp before after new opt stale)
@@ -353,17 +379,7 @@
        (setq g (getdist (strcat "\nMax gap width <"
                                 (rtos *sb-gap* 2 2) ">: ")))
        (if g (setq *sb-gap* g)))
-      ((= pt "Layer")
-       (setq l (getstring T
-                 (strcat "\nOutput layer for boundary <"
-                         (if *sb-out-layer* *sb-out-layer* "current")
-                         "> (. = current): ")))
-       (cond
-         ((= l "") nil)
-         ((= l ".") (setq *sb-out-layer* nil)
-          (princ "\nBoundaries will be created on current layer."))
-         (T (setq *sb-out-layer* l)
-            (princ (strcat "\nBoundaries will go to layer " l ".")))))
+      ((= pt "Layer") (sb:set-layer))
       (T
        ;; select curves in a generous window around pt
        (setq r (* *sb-gap* 20.0)  ; search radius (~room-sized)
