@@ -302,9 +302,11 @@
         (if en (setq out (cons en out))))))
   out)
 
-(defun sb:run-boundary-and-report (pt temp / before after new i en)
+(defun sb:run-boundary-and-report (pt temp / before after new i en frozen)
   (setq before (ssget "_X" '((0 . "LWPOLYLINE"))))
+  (setq frozen (sb:freeze-non-wall))
   (command "_.-BOUNDARY" pt "")
+  (if frozen (sb:thaw frozen))
   (setq after (ssget "_X" '((0 . "LWPOLYLINE"))))
   (setq new nil)
   (if after
@@ -335,6 +337,36 @@
         (sb:cleanup temp)))
     (princ "\nNo bridges drawn."))
   (princ))
+
+;; -- freeze non-wall layers around a BOUNDARY call -------------------------
+
+(defun sb:all-layer-names ( / t out)
+  (setq out nil t (tblnext "LAYER" T))
+  (while t
+    (setq out (cons (cdr (assoc 2 t)) out))
+    (setq t (tblnext "LAYER")))
+  out)
+
+(defun sb:freeze-non-wall ( / cur keep frozen name)
+  (setq frozen nil)
+  (if (not *sb-wall-layers*) nil
+    (progn
+      (setq cur   (getvar "CLAYER")
+            keep  (append (list cur "SB_TEMP") *sb-wall-layers*
+                          (if *sb-out-layer* (list *sb-out-layer*) nil)))
+      (foreach name (sb:all-layer-names)
+        (if (and (not (member name keep))
+                 ;; only freeze layers that are currently thawed & on
+                 (setq lrec (tblsearch "LAYER" name))
+                 (= 0 (logand 1 (cdr (assoc 70 lrec)))))
+          (progn
+            (command "_.-LAYER" "_F" name "")
+            (setq frozen (cons name frozen)))))))
+  frozen)
+
+(defun sb:thaw (names)
+  (foreach n names
+    (command "_.-LAYER" "_T" n "")))
 
 ;; -- wall layer selection --------------------------------------------------
 
@@ -408,7 +440,7 @@
 
 ;; -- main ------------------------------------------------------------------
 
-(defun c:SB ( / pt ss eps bridges temp before after new opt stale)
+(defun c:SB ( / pt ss eps bridges temp before after new opt stale frozen g l r i en)
   (princ (strcat "\nSmart Boundary - gap tol = "
                  (rtos *sb-gap* 2 2)))
   ;; wipe any leftover bridges from a crashed prior run
@@ -450,7 +482,9 @@
            (setq temp (sb:draw-bridges bridges))
            ;; snapshot polylines before
            (setq before (ssget "_X" '((0 . "LWPOLYLINE"))))
+           (setq frozen (sb:freeze-non-wall))
            (command "_.-BOUNDARY" pt "")
+           (if frozen (sb:thaw frozen))
            (setq after (ssget "_X" '((0 . "LWPOLYLINE"))))
            ;; find new pline(s)
            (setq new nil)
