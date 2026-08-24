@@ -8,6 +8,7 @@ Each tool lives in its own folder with its own README (install + usage).
 
 | Folder | Command | What it does |
 |---|---|---|
+| [AKDDoorHole](./AKDDoorHole) | `AD` `AW` `ADD` `AWW` `HH` `CW` `EW` | Plan-view door/window tool for two-line walls. `AD`/`AW` cut the opening and place the door/window in one shot; `CW` resizes with wall repair; `EW` deletes with wall repair (multi-select). |
 | [AKDPickArea](./AKDPickArea) | `AA` | Scaled area takeoff for windows, doors, and rooms. Picks closed polylines, totals with unit/scale conversion, drops a labeled MTEXT (e.g. `W3 / 1.44 SQM`). |
 | [AKDVent](./AKDVent) | `VE` | Auto-generates a Ventilation Schedule table from room MTEXTs. Calculates required opening area at 10% of room area (Malaysian UBBL). Pairs with **AKDHatchToLabel**. |
 | [AKDHatchToLabel](./AKDHatchToLabel) | `HATX` | Turns a room hatch into a formatted room label (name + area). Duplicate rooms auto-number. Settings-file driven. |
