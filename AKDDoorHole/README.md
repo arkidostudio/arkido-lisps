@@ -1,31 +1,60 @@
 # AKDDoorWin
 
-Plan-view door and window tool that cuts the opening through a two-parallel-line wall and places the door/window inside it in one shot. Includes resize (with wall repair) and erase (with wall repair).
+Plan-view door and window tool that cuts the opening through a two-parallel-line wall and places the door/window inside it in one shot. Includes corner windows/holes, resize, erase, and hole-repair.
 
 ## Commands
 
+### Placement (cuts hole + places object; loops until Esc/Enter)
+
 | Command | What it does |
 |---|---|
-| `AD` | Click a wall segment → cuts a hole and places a door in it. Options: `A`=Single leaf, `D`=Double, `S`=Sliding, `P`=sliding panels, `Width`, `Center`/`FromWall`, `Gap`. |
-| `AW` | Same as `AD` but drops a window. Options: `Divisions`, `S`=toggle sliding window (adds ticks between panels), `Width`, `Center`/`FromWall`, `Gap`. |
-| `ADD` | Legacy 2-click door: pick two points on the wall, no hole cutting. Same type shortcuts (`A`/`D`/`S`/`P`). |
-| `AWW` | Legacy 2-click window: pick two points. `D` sets divisions, `S` toggles sliding. |
-| `HH` | Cut a hole only (no door/window). Same `Center`/`FromWall`/`Width`/`Gap` options. |
-| `CW` | Click any part of a placed door/window → prompts new width, resizes the opening and the door/window together. `Base` option locks a picked point in place while the opposite jamb moves. |
-| `EW` | Select one or many placed doors/windows → deletes each and closes the wall back up (works with LINE walls and open or closed LWPOLYLINE walls). |
-| `DC` / `DR` | Door count / door renumber. |
-| `WC` / `WR` | Window count / window renumber. |
-| `LT` / `LC` | Label toggle / label continuous vs new batch. |
+| `HH` | Cut a hole only (no door/window). Options: `Center`/`FromWall`/`Width`/`Gap`. |
+| `AD` | Cuts hole and places a door. Options: `A`=Single leaf, `D`=Double, `S`=Sliding, `Panels`, plus width/placement/gap. |
+| `AW` | Cuts hole and places a window. Options: `Divisions`, `S`=toggle sliding (adds mullion ticks). |
+| `AC` | Cuts hole and places a curtain wall. `S`=Spacing mode (then `S`=set value), `D`=Divisions mode (then `D`=set value). |
+
+Type a number at the main prompt to set width directly (e.g. `AD` then `800` = 800mm door width).
+
+### 2-click placement (no hole cutting)
+
+| Command | What it does |
+|---|---|
+| `ADD` | Draw a door between two picked points. Same type shortcuts. |
+| `AWW` | Draw a window between two picked points. |
+| `ACC` | Draw a curtain wall between two picked points. |
+
+### Corner tools
+
+| Command | What it does |
+|---|---|
+| `AXW` | Corner window: pick first wall end → corner → second wall end. `Divisions` sets glass panels per arm. `H`=run `HHX` first to cut the corner hole. |
+| `HHX` | Cut a corner hole through two walls meeting at a picked corner. |
+
+### Edit
+
+| Command | What it does |
+|---|---|
+| `CW` | Click a placed door/window → prompts new width, resizes the opening + object together. `Base` locks a picked point while the opposite jamb moves. |
+| `EW` | Select one or many placed doors/windows → deletes each and closes the wall back up. Works with LINE walls and open/closed LWPOLYLINE walls. |
+| `RH` | Repair Hole: pick the two cap lines of a hole (e.g. one cut by `HH` or `HHX`) → deletes them and merges the wall stubs back into continuous lines. Use when you cut a hole but decided against placing a door/window. |
+
+### Counts, renumbering, labels, schedule
+
+| Command | What it does |
+|---|---|
+| `WC` / `WR` | Window count by width / renumber. |
+| `DC` / `DR` | Door count by width / renumber. |
+| `LT` / `LC` | Labels on/off / continuous vs new-batch numbering. |
+| `DWT` | Draw doors & windows schedule table at a picked point. |
 
 ## Wall requirements
 
-`AD`, `AW`, `HH`, `CW`, `EW` need the wall drawn as **two parallel lines** (`LINE` or `LWPOLYLINE` segments) on the same layer. Click one line — the parallel partner is auto-detected. Cap lines are drawn on the wall's own layer so `EW` can find them again later.
+`HH`, `AD`, `AW`, `AC`, `CW`, `EW`, `RH` need the wall drawn as **two parallel lines** (`LINE` or `LWPOLYLINE`) on the same layer. Click one line — the parallel partner is auto-detected. Cap lines are drawn on the wall's own layer so `EW`/`RH` can find them again later. Works with walls drawn by `WW.lsp`.
 
 ## Notes
 
-- Each placed door/window gets a centered text label (height 100) showing its width, and is grouped so `CW`/`EW` can find and manipulate it as a whole.
-- `AD`/`AW` remember their last width, type, divisions, and Center/FromWall mode in session state.
-- Type a number at the main prompt to set width directly (e.g. `AD` → `D` → `900` → click wall = double door, 900mm wide).
+- Each placed door/window gets a centered text label (height 100) showing its width, grouped so `CW`/`EW` can find and manipulate it as a whole.
+- Placement commands remember their last width, type, divisions, and Center/FromWall mode in session state.
 - `CW` and `EW` accept pre-selected objects: pick the door(s) first, then run the command.
 - Color/layer/dimension config lives at the top of `AKDDoorWin.lsp`.
 

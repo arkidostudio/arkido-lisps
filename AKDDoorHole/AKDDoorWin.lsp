@@ -58,6 +58,12 @@
 
 ;; session defaults
 (if (null *win-div*)   (setq *win-div* 1))
+(if (null *ac-mode*)   (setq *ac-mode* "M"))
+(if (null *ac-spacing*) (setq *ac-spacing* 1200.0))
+(if (null *ac-div*)    (setq *ac-div* 4))
+(if (null *cfg-corner-post*) (setq *cfg-corner-post* 100.0))
+(if (null *axw-ref*)   (setq *axw-ref* "C"))
+(if (null *win-tag-type*) (setq *win-tag-type* "W"))
 (if (null *win-slide*) (setq *win-slide* nil))
 (if (null *cfg-slide-win-tick*) (setq *cfg-slide-win-tick* 100.0))
 (if (null *door-type*) (setq *door-type* "S"))
@@ -346,7 +352,19 @@
                     (cons 1041 (float *label-batch*))
                     (list 1011 (car mid) (cadr mid) 0.0)
                     (list 1013 (car vdir) (cadr vdir) 0.0)
-                    (cons 1000 (strcat "G:" (if gname gname "")))))))))
+                    (cons 1000 (strcat "G:" (if gname gname "")))
+                    (cons 1000 (strcat "T:" *win-tag-type*))))))))
+
+(defun _extract-type (xd)
+  (cond
+    ((car (vl-remove nil
+       (mapcar '(lambda (it)
+                  (if (and (= (car it) 1000)
+                           (>= (strlen (cdr it)) 2)
+                           (= (substr (cdr it) 1 2) "T:"))
+                    (substr (cdr it) 3)))
+         xd))))
+    ("W")))
 
 (defun _tag-winlbl (ent gname)
   (regapp "AWINLBL")
@@ -422,11 +440,13 @@
           (setq edges (list p1i))
           (if (> *win-div* 1)
             (progn
-              (setq n    (1- *win-div*)
-                    step (/ (distance p1i p2i) (float *win-div*))
-                    i    1)
+              (setq n        (1- *win-div*)
+                    glassLen (/ (- (distance p1i p2i) (* n fw))
+                                (float *win-div*))
+                    i        1)
               (while (<= i n)
-                (setq pc (_add p1i (_scale v (* step i))))
+                (setq pc (_add p1i (_scale v
+                            (+ (* i glassLen) (* (- i 0.5) fw)))))
                 (setq ents (cons
                              (_rect (_sub pc (_scale v (/ fw 2.0)))
                                     (_add pc (_scale v (/ fw 2.0)))
@@ -462,11 +482,13 @@
   (princ))
 
 (defun _win-renum (ss batch / i e xd items lh off n mid vd sd bt ang pt w dv gn
-                                keys key kmap hex txt lg)
+                                tp keys key kmap prefix prefixes hex txt lg)
   (regapp "AWIN")
   (regapp "AWINLBL")
   (if (null ss) (setq ss (ssget "_X" '((-3 ("AWIN"))))))
-  (if (null ss) (progn (princ "\nNo windows found.") (exit)))
+  (cond
+   ((null ss) (princ "\nNo windows found."))
+   (t
   (setq i 0 items nil)
   (repeat (sslength ss)
     (setq e   (ssname ss i)
@@ -478,41 +500,52 @@
           bt  (cond ((cdr (assoc 1041 xd))) (0.0))
           mid (cdr (assoc 1011 xd))
           vd  (cdr (assoc 1013 xd))
-          gn  (_extract-gname xd))
+          gn  (_extract-gname xd)
+          tp  (_extract-type xd))
     (if (and w mid vd
              (or (null batch) (= (fix bt) batch)))
-      (setq items (cons (list w dv mid vd gn sd e) items)))
+      (setq items (cons (list w dv mid vd gn sd e tp) items)))
     (setq i (1+ i)))
   (foreach it items
     (setq gn (nth 4 it))
     (if gn (foreach lbl (_labels-for-gname gn "AWINLBL") (entdel lbl))))
+  ;; Separate sequences per type (W, CW, ...). Key = (type width div).
   (setq keys nil)
   (foreach it items
-    (setq key (list (fix (+ 0.5 (car it))) (cadr it)))
+    (setq key (list (nth 7 it) (fix (+ 0.5 (car it))) (cadr it)))
     (if (not (member key keys)) (setq keys (cons key keys))))
   (setq keys (vl-sort keys
     '(lambda (a b)
-       (cond ((> (car a) (car b)) t)
-             ((< (car a) (car b)) nil)
-             (t (> (cadr a) (cadr b)))))))
-  (setq n 1 kmap nil)
-  (foreach k keys (setq kmap (cons (cons k n) kmap) n (1+ n)))
+       (cond ((/= (car a) (car b)) (< (car a) (car b)))
+             ((> (cadr a) (cadr b)) t)
+             ((< (cadr a) (cadr b)) nil)
+             (t (> (caddr a) (caddr b)))))))
+  (setq kmap nil prefixes nil)
+  (foreach k keys
+    (if (not (member (car k) prefixes))
+      (setq prefixes (cons (car k) prefixes))))
+  (foreach prefix (reverse prefixes)
+    (setq n 1)
+    (foreach k keys
+      (if (= (car k) prefix)
+        (setq kmap (cons (cons k n) kmap) n (1+ n)))))
   (setq lh *cfg-lbl-h* off *cfg-lbl-off-win*)
   (foreach it items
     (setq w   (car   it) dv  (cadr it) mid (caddr it) vd (cadddr it)
           gn  (nth 4 it) sd (cond ((nth 5 it)) (1))
-          key (cdr (assoc (list (fix (+ 0.5 w)) dv) kmap))
+          tp  (nth 7 it)
+          key (cdr (assoc (list tp (fix (+ 0.5 w)) dv) kmap))
           ang (atan (cadr vd) (car vd))
           pt  (list (+ (car mid) (* (- (sin ang)) off sd))
                     (+ (cadr mid) (* (cos ang) off sd)) 0.0))
     (setq hex (_mkhex pt *cfg-lbl-hex-r* *cfg-lbl-shape*)
-          txt (_mktext pt lh 0.0 (strcat "W" (itoa key)) *cfg-lbl-text*))
+          txt (_mktext pt lh 0.0 (strcat tp (itoa key)) *cfg-lbl-text*))
     (_tag-winlbl hex gn) (_tag-winlbl txt gn)
-    (_tag-lblnum (nth 6 it) "AWIN" (strcat "W" (itoa key)))
+    (_tag-lblnum (nth 6 it) "AWIN" (strcat tp (itoa key)))
     (setq lg (_uniqname "AWINLBL"))
     (_mkgroup lg (list hex txt)))
   (princ (strcat "\nRenumbered " (itoa (length items))
-                 " window(s) into " (itoa (length keys)) " type(s)."))
+                 " window(s) into " (itoa (length keys)) " type(s)."))))
   (princ))
 
 (defun c:WR ( / cmde)
@@ -832,7 +865,9 @@
   (regapp "ADOOR")
   (regapp "ADOORLBL")
   (if (null ss) (setq ss (ssget "_X" '((-3 ("ADOOR"))))))
-  (if (null ss) (progn (princ "\nNo doors found.") (exit)))
+  (cond
+   ((null ss) (princ "\nNo doors found."))
+   (t
   (setq i 0 items nil)
   (repeat (sslength ss)
     (setq e   (ssname ss i)
@@ -882,7 +917,7 @@
     (setq lg (_uniqname "ADOORLBL"))
     (_mkgroup lg (list cir txt)))
   (princ (strcat "\nRenumbered " (itoa (length items))
-                 " door(s) into " (itoa (length keys)) " type(s)."))
+                 " door(s) into " (itoa (length keys)) " type(s)."))))
   (princ))
 
 (defun c:DR ( / cmde)
@@ -1177,22 +1212,36 @@
 (defun hole:getm () (if (= (getvar "USERI1") 1) "F" "C"))
 (defun hole:setm (m) (setvar "USERI1" (if (= m "F") 1 0)))
 
-(defun hole:prompt ()
-  (strcat "\n[" (if (= (hole:getm) "F") "FromWall" "Center")
-          " W=" (rtos (hole:getw) 2 2)
-          (if (= (hole:getm) "F") (strcat " G=" (rtos (hole:getg) 2 2)) "")
-          "] Click wall or [Center/FromWall/Width/Gap]: "))
-
-(defun c:HH () (hole:loop nil "hole" 'hole:getw 'hole:setw "" nil))
+(defun c:HH () (hole:loop nil "hole" 'hole:getw 'hole:setw "" nil nil))
 (defun c:AD () (hole:loop 'hole:post-door "door" 'hd:getw 'hd:setw
-                          "A D S Panels" 'hd:extra))
+                          "A D S Panels" 'hd:extra 'hd:status))
 (defun c:AW () (hole:loop 'hole:post-window "window" 'hw:getw 'hw:setw
-                          "Divisions S" 'hw:extra))
+                          "Divisions S" 'hw:extra 'hw:status))
+(defun c:AC ()
+  (hole:loop 'hole:post-curtain "curtain" 'ac:getw 'ac:setw
+             "Spacing Divisions" 'ac:extra 'ac:status))
+
+(defun ac:status ()
+  (if (= *ac-mode* "M")
+    (strcat "Spacing: " (rtos *ac-spacing* 2 0))
+    (strcat "Divisions: " (itoa *ac-div*))))
+
+(defun hd:status ()
+  (strcat "Type: " (cond ((= *door-type* "D") "Double")
+                         ((= *door-type* "G")
+                           (strcat "Sliding/" (itoa *slide-div*) "p"))
+                         (t "Single"))))
+
+(defun hw:status ()
+  (strcat "Divisions: " (itoa *win-div*)
+          (if *win-slide* " | Sliding" "")))
 
 (defun hole:post-door (b1a b1b b2a b2b)
   (akd:place-door (hole:mid b1a b2a) (hole:mid b1b b2b)))
 (defun hole:post-window (b1a b1b b2a b2b)
   (akd:place-window (hole:mid b1a b2a) (hole:mid b1b b2b)))
+(defun hole:post-curtain (b1a b1b b2a b2b)
+  (akd:place-curtain (hole:mid b1a b2a) (hole:mid b1b b2b)))
 (defun hole:mid (a b) (mapcar '(lambda (x y) (/ (+ x y) 2.0)) a b))
 
 (defun hole:setw (v) (setvar "USERR1" v))
@@ -1200,6 +1249,8 @@
 (defun hd:setw (v) (setq *hd-w* v))
 (defun hw:getw () (if *hw-w* *hw-w* 1200.0))
 (defun hw:setw (v) (setq *hw-w* v))
+(defun ac:getw () (if *ac-w* *ac-w* 4800.0))
+(defun ac:setw (v) (setq *ac-w* v))
 
 (defun hd:extra (kw / v)
   (cond
@@ -1212,6 +1263,241 @@
       (if v (setq *slide-div* v)) t)
     (t nil)))
 
+(defun ac:extra (kw / sub v)
+  (cond
+    ((= kw "Spacing")
+      (setq *ac-mode* "M")
+      (initget "Spacing")
+      (setq sub (getkword
+        (strcat "\nMode: Spacing (" (rtos *ac-spacing* 2 0)
+                "). [S=set value, Enter=keep]: ")))
+      (cond ((= sub "Spacing")
+             (initget 6)
+             (setq v (getreal (strcat "\nMullion spacing <"
+                                      (rtos *ac-spacing* 2 0) ">: ")))
+             (if v (setq *ac-spacing* v)))) t)
+    ((= kw "Divisions")
+      (setq *ac-mode* "D")
+      (initget "Divisions")
+      (setq sub (getkword
+        (strcat "\nMode: Divisions (" (itoa *ac-div*)
+                "). [D=set value, Enter=keep]: ")))
+      (cond ((= sub "Divisions")
+             (initget 6)
+             (setq v (getint (strcat "\nDivisions <" (itoa *ac-div*) ">: ")))
+             (if v (setq *ac-div* v)))) t)
+    (t nil)))
+
+(defun akd:place-curtain (p1 p2 / width divs ratio use-auto oldDiv oldSlide oldType)
+  (cond
+    ((or (null p1) (null p2)) (princ "\nCancelled."))
+    (t
+      (setq width (distance p1 p2))
+      (cond
+        ((eq *ac-mode* "M")
+          (setq ratio (/ width *ac-spacing*)
+                divs (fix (+ 0.5 ratio)))
+          (if (< divs 1) (setq divs 1))
+          (if (not (equal ratio (float divs) 1e-3))
+            (progn
+              (initget "Yes No")
+              (setq use-auto (getkword
+                (strcat "\nLength " (rtos width 2 0) " / spacing "
+                        (rtos *ac-spacing* 2 0) " = "
+                        (rtos ratio 2 3)
+                        ". Auto-fit to " (itoa divs)
+                        " divs (spacing " (rtos (/ width divs) 2 0)
+                        ")? [Yes/No] <Yes>: ")))
+              (if (eq use-auto "No") (setq divs (fix ratio)))
+              (if (< divs 1) (setq divs 1)))))
+        (t (setq divs *ac-div*)))
+      (setq oldDiv *win-div* oldSlide *win-slide* oldType *win-tag-type*
+            *win-div* divs *win-slide* nil *win-tag-type* "CW")
+      (akd:place-window p1 p2)
+      (setq *win-div* oldDiv *win-slide* oldSlide *win-tag-type* oldType))))
+
+(defun c:ACC ( / p1 p2 nd sp)
+  (princ (strcat "\nCurtain Wall. "
+                 (if (= *ac-mode* "M")
+                   (strcat "Spacing=" (rtos *ac-spacing* 2 0))
+                   (strcat "Divs=" (itoa *ac-div*)))))
+  (while (progn
+    (initget "Spacing Divisions")
+    (setq p1 (getpoint (strcat "\nFirst curtain point or [Spacing/Divisions] ("
+                       (if (= *ac-mode* "M")
+                         (strcat "sp=" (rtos *ac-spacing* 2 0))
+                         (strcat (itoa *ac-div*) "div")) "): ")))
+    (cond
+      ((eq p1 "Spacing")
+        (initget 6)
+        (setq sp (getreal (strcat "\nMullion spacing <"
+                                  (rtos *ac-spacing* 2 0) ">: ")))
+        (if sp (progn (setq *ac-spacing* sp) (setq *ac-mode* "M"))) t)
+      ((eq p1 "Divisions")
+        (initget 6)
+        (setq nd (getint (strcat "\nDivisions <" (itoa *ac-div*) ">: ")))
+        (if nd (progn (setq *ac-div* nd) (setq *ac-mode* "D"))) t))))
+  (if p1 (setq p2 (getpoint p1 "\nSecond curtain point: ")))
+  (akd:place-curtain p1 p2)
+  (princ))
+
+;; -- Corner window (AXW) --------------------------------------------
+
+;; Line-line intersection (2D). Returns nil if parallel.
+(defun _isect (p1 v1 p2 v2 / det s)
+  (setq det (- (* (car v1) (- 0 (cadr v2))) (* (- 0 (car v2)) (cadr v1))))
+  (if (equal det 0.0 1e-9) nil
+    (progn
+      (setq s (/ (- (* (car v1) (- (cadr p2) (cadr p1)))
+                    (* (cadr v1) (- (car p2) (car p1))))
+                 det))
+      (list (+ (car p2) (* s (car v2)))
+            (+ (cadr p2) (* s (cadr v2))) 0.0))))
+
+(defun _sgn (x) (cond ((> x 0) 1.0) ((< x 0) -1.0) (0.0)))
+
+;; Draw one arm of a corner window: jamb at outer end, mullions, glass.
+(defun akd:place-corner-arm (armC p2 fw fd v perp ents / p2i intLen
+                                                        n glassLen i pc
+                                                        edges e1 e2)
+  (setq p2i (_sub p2 (_scale v fw)))
+  (setq ents (cons (_rect p2 p2i perp fd *cfg-win-frame*) ents))
+  (setq edges (list armC))
+  (if (> *win-div* 1)
+    (progn
+      (setq n        (1- *win-div*)
+            intLen   (distance armC p2i)
+            glassLen (/ (- intLen (* n fw)) (float *win-div*))
+            i        1)
+      (while (<= i n)
+        (setq pc (_add armC (_scale v (+ (* i glassLen) (* (- i 0.5) fw)))))
+        (setq ents (cons (_rect (_sub pc (_scale v (/ fw 2.0)))
+                                (_add pc (_scale v (/ fw 2.0)))
+                                perp fd *cfg-win-frame*) ents))
+        (setq edges (append edges
+                     (list (_sub pc (_scale v (/ fw 2.0)))
+                           (_add pc (_scale v (/ fw 2.0))))))
+        (setq i (1+ i)))))
+  (setq edges (append edges (list p2i)))
+  (while (cdr edges)
+    (setq e1 (car edges) e2 (cadr edges))
+    (setq ents (cons (_mkline e1 e2 *cfg-win-glass*) ents))
+    (setq edges (cddr edges)))
+  ents)
+
+(defun c:AXW ( / ref refPt p1 p2 fw fd os postSz halfP
+                 ang1 ang2 v1 v2 perp1 perp2 sIn1 sIn2 pi1 pi2
+                 cornerCtr armC1 armC2 innerCorn outerCorn
+                 postP1 postP2 postP3 postP4 ents gname cmde nd choice totalW
+                 oldForce oldWw oldMode wallEnt)
+  (setq fw *cfg-win-fw* fd *cfg-win-fd* os *cfg-win-wall-off*
+        postSz *cfg-corner-post* halfP (/ postSz 2.0))
+  (setq *axw-ref* "C")
+  (while (progn
+    (initget "Divisions Hole")
+    (setq p1 (getpoint (strcat "\n[Corner Window | Divisions: "
+                          (itoa *win-div*)
+                          "/arm] First wall end or [Divisions/Hole]: ")))
+    (cond
+      ((eq p1 "Divisions")
+        (initget 6)
+        (setq nd (getint (strcat "\nDivisions per arm <"
+                                 (itoa *win-div*) ">: ")))
+        (if nd (setq *win-div* nd)) t)
+      ((eq p1 "Hole")
+        (c:HHX)
+        (princ "\nHole cut. Restart AXW to place the corner window.")
+        (setq p1 nil) nil))))
+  (if p1 (setq refPt (getpoint p1 "\nCorner point: ")))
+  (if refPt (setq p2 (getpoint refPt "\nSecond wall end: ")))
+  (cond
+    ((or (null refPt) (null p1) (null p2)) (princ "\nCancelled."))
+    (t
+      (setq ang1 (angle refPt p1) ang2 (angle refPt p2)
+            v1 (list (cos ang1) (sin ang1) 0.0)
+            v2 (list (cos ang2) (sin ang2) 0.0)
+            perp1 (list (- (sin ang1)) (cos ang1) 0.0)
+            perp2 (list (- (sin ang2)) (cos ang2) 0.0)
+            sIn1 (_sgn (+ (* (car perp1) (car v2))
+                          (* (cadr perp1) (cadr v2))))
+            sIn2 (_sgn (+ (* (car perp2) (car v1))
+                          (* (cadr perp2) (cadr v1))))
+            pi1 (_scale perp1 sIn1)
+            pi2 (_scale perp2 sIn2))
+      ;; Compute cornerCtr from reference choice
+      (setq cornerCtr
+        (cond
+          ((= *axw-ref* "I")
+            (_sub refPt (_add (_scale pi1 os) (_scale pi2 os))))
+          ((= *axw-ref* "O")
+            (_add refPt (_add (_scale pi1 os) (_scale pi2 os))))
+          (t refPt)))
+      ;; Recompute v1/v2 from cornerCtr for accuracy
+      (setq ang1 (angle cornerCtr p1) ang2 (angle cornerCtr p2)
+            v1 (list (cos ang1) (sin ang1) 0.0)
+            v2 (list (cos ang2) (sin ang2) 0.0)
+            perp1 (list (- (sin ang1)) (cos ang1) 0.0)
+            perp2 (list (- (sin ang2)) (cos ang2) 0.0)
+            sIn1 (_sgn (+ (* (car perp1) (car v2))
+                          (* (cadr perp1) (cadr v2))))
+            sIn2 (_sgn (+ (* (car perp2) (car v1))
+                          (* (cadr perp2) (cadr v1))))
+            pi1 (_scale perp1 sIn1)
+            pi2 (_scale perp2 sIn2)
+            armC1 (_add cornerCtr (_scale v1 halfP))
+            armC2 (_add cornerCtr (_scale v2 halfP)))
+      (cond
+        ((or (<= (distance armC1 p1) (* 2.0 fw))
+             (<= (distance armC2 p2) (* 2.0 fw)))
+          (princ "\nArms too short for the frame width."))
+        (t
+          ;; Wall corner fillet intersections
+          (setq innerCorn (_isect (_add cornerCtr (_scale pi1 os)) v1
+                                  (_add cornerCtr (_scale pi2 os)) v2)
+                outerCorn (_isect (_sub cornerCtr (_scale pi1 os)) v1
+                                  (_sub cornerCtr (_scale pi2 os)) v2))
+          ;; Post quad, centered on cornerCtr (100x100)
+          (setq postP1 (_sub cornerCtr (_add (_scale v1 halfP) (_scale v2 halfP)))
+                postP2 (_add (_sub cornerCtr (_scale v2 halfP)) (_scale v1 halfP))
+                postP3 (_add cornerCtr (_add (_scale v1 halfP) (_scale v2 halfP)))
+                postP4 (_add (_sub cornerCtr (_scale v1 halfP)) (_scale v2 halfP)))
+          (setq cmde (getvar "CMDECHO"))
+          (setvar "CMDECHO" 0)
+          (command "_.UNDO" "_BE")
+          (setq ents nil)
+          (setq ents (cons (_mkpline (list postP1 postP2 postP3 postP4)
+                                     *cfg-win-frame*) ents))
+          (setq ents (akd:place-corner-arm armC1 p1 fw fd v1 perp1 ents))
+          (setq ents (akd:place-corner-arm armC2 p2 fw fd v2 perp2 ents))
+          ;; Filleted wall lines (interior + exterior) for each arm
+          (if innerCorn
+            (progn
+              (setq ents (cons (_mkline innerCorn
+                                (_add p1 (_scale pi1 os)) *cfg-win-wall*) ents))
+              (setq ents (cons (_mkline innerCorn
+                                (_add p2 (_scale pi2 os)) *cfg-win-wall*) ents))))
+          (if outerCorn
+            (progn
+              (setq ents (cons (_mkline outerCorn
+                                (_sub p1 (_scale pi1 os)) *cfg-win-wall*) ents))
+              (setq ents (cons (_mkline outerCorn
+                                (_sub p2 (_scale pi2 os)) *cfg-win-wall*) ents))))
+          (setq gname (_uniqname "AWIN")
+                totalW (+ (distance armC1 p1) (distance armC2 p2)))
+          (_mkgroup gname (reverse ents))
+          (_tagwin (car ents) totalW 1
+            (if *label-on*
+              (_pick-lbl-side cornerCtr perp1 *cfg-lbl-off-win*
+                              *cfg-lbl-hex-r* t)
+              1.0)
+            cornerCtr v1 gname)
+          (if *label-on* (_win-renum nil *label-batch*))
+          (command "_.UNDO" "_E")
+          (setvar "CMDECHO" cmde)
+          (princ (strcat "\nCorner window created (total width "
+                         (rtos totalW 2 0) ")."))))))
+  (princ))
+
 (defun hw:extra (kw / v)
   (cond
     ((= kw "Divisions")
@@ -1223,30 +1509,40 @@
       (princ (strcat "\nWindow: " (if *win-slide* "Sliding" "Fixed") ".")) t)
     (t nil)))
 
-(defun hole:prompt2 (label wget extra)
-  (strcat "\n[" (if (= (hole:getm) "F") "FromWall" "Center")
-          " " label "-W=" (rtos (apply wget nil) 2 2)
-          (if (= (hole:getm) "F") (strcat " G=" (rtos (hole:getg) 2 2)) "")
-          "] Click wall or [Center/FromWall/Gap/Width"
+(defun hole:prompt2 (label wget extra status)
+  (strcat "\n[" (strcase (substr label 1 1)) (substr label 2)
+          (if (/= status "") (strcat " | " status) "")
+          " | Width: " (rtos (apply wget nil) 2 2)
+          " | Placement: " (if (= (hole:getm) "F") "FromWall" "Center")
+          (if (= (hole:getm) "F") (strcat " | Gap: " (rtos (hole:getg) 2 2)) "")
+          "] Click wall or [Center/FromWall/Width"
+          (if (= (hole:getm) "F") "/Gap" "")
           (if (/= extra "") (strcat "/" (vl-string-translate " " "/" extra)) "")
           "]: "))
 
-(defun hole:loop (post label wget wset extra extracb
+(defun hole:loop (post label wget wset extra extracb statusfn
                     / inp v done ss ent oldw kws)
   (setvar "CMDECHO" 0)
   (if (not *hole-hinted*)
     (progn
-      (princ "\nClick a LINE or polyline segment; parallel partner auto-detected.")
+      (princ "\nClick on a LINE or polyline segment; parallel partner auto-detected.")
       (princ "\nType a number at the prompt to set width directly. Loops until Esc/Enter.")
       (setq *hole-hinted* t)))
-  (setq done nil
-        kws (strcat "Center FromWall Gap Width"
-                    (if (/= extra "") (strcat " " extra) "")))
+  (setq done nil)
   (while (not done)
+    (setq kws (strcat "Center FromWall Width"
+                      (if (= (hole:getm) "F") " Gap" "")
+                      (if (/= extra "") (strcat " " extra) "")))
     (initget 128 kws)
-    (setq inp (entsel (hole:prompt2 label wget extra)))
+    (setq inp (getpoint (hole:prompt2 label wget extra
+                          (if statusfn (apply statusfn nil) ""))))
     (cond
       ((null inp) (setq done t))
+      ((and (= (type inp) 'STR)
+            (or (setq v (distof inp)) (setq v (atof inp)))
+            (> v 0))
+        (apply wset (list v))
+        (princ (strcat "\n" label " width set to " (rtos v 2 2) ".")))
       ((= inp "Center")   (hole:setm "C"))
       ((= inp "FromWall") (hole:setm "F"))
       ((= inp "Gap")
@@ -1258,20 +1554,16 @@
                                  (rtos (apply wget nil) 2 2) ">: ")))
         (if v (apply wset (list v))))
       ((and (= (type inp) 'STR) extracb (apply extracb (list inp))))
-      ((and (= (type inp) 'STR) (setq v (distof inp)) (> v 0))
-        (apply wset (list v))
-        (princ (strcat "\n" label " width set to " (rtos v 2 2) ".")))
-      ((and (listp inp) (= (type (car inp)) 'ENAME))
+      ((listp inp)
+        (setq ss (ssget inp '((0 . "LINE,LWPOLYLINE"))))
         (cond
-          ((not (member (cdr (assoc 0 (entget (car inp))))
-                        '("LINE" "LWPOLYLINE")))
-            (princ "\nPick a LINE or LWPOLYLINE."))
+          ((null ss) (princ "\nNo LINE or polyline at that point. Use snap."))
           (t
-            (setq ent (car inp)
+            (setq ent (ssname ss 0)
                   oldw (getvar "USERR1"))
             (setvar "USERR1" (apply wget nil))
             (command-s "_.UNDO" "_BE")
-            (hole:do ent (cadr inp) post)
+            (hole:do ent inp post)
             (command-s "_.UNDO" "_E")
             (setvar "USERR1" oldw))))))
   (princ))
@@ -1297,14 +1589,17 @@
                 w (hole:getw) d (hole:getg)
                 half (/ w 2.0))
 
-          (if (= mode "F")
-            (progn
+          (cond
+            (*hole-force-ctr*
+              (setq ctr1 (hole:proj *hole-force-ctr* p1a dir)))
+            ((= mode "F")
               (setq nearEnd (if (< (distance pk p1a) (distance pk p1b)) p1a p1b))
               (setq ctr1 (mapcar '+ nearEnd
                           (hole:scl (if (equal nearEnd p1a) dir
                                       (hole:scl dir -1.0))
                                     (+ d half)))))
-            (setq ctr1 (mapcar '+ p1a (hole:scl dir (/ len 2.0)))))
+            (t
+              (setq ctr1 (mapcar '+ p1a (hole:scl dir (/ len 2.0))))))
 
           (setq c1 ctr1
                 c2 (hole:proj ctr1 p2a dir)
@@ -1536,6 +1831,133 @@
 
 (defun c:HOLE () (c:HH))
 
+;; -- HH corner hole (HHX) --------------------------------------------
+;; Corner-anchored: click corner point, then a point on each adjoining
+;; wall to define arm length. On each wall, everything from the corner
+;; up to the arm end is removed and a single cap is drawn at the arm end.
+
+;; Trim a LINE so only the portion on the arm-outer side of capPt remains.
+;; Direction "positive" = along +armDir. LWPOLYLINE walls fall back to
+;; hole:split-line-half equivalent (not implemented — LINE walls only).
+(defun hhx:trim-half (ent capPt armDir / d s e ps pe)
+  (setq d (entget ent))
+  (cond
+    ((/= (cdr (assoc 0 d)) "LINE")
+      (princ "\nHHX supports LINE walls only for the trim step."))
+    (t
+      (setq s (cdr (assoc 10 d)) e (cdr (assoc 11 d))
+            ps (+ (* (- (car s) (car capPt)) (car armDir))
+                  (* (- (cadr s) (cadr capPt)) (cadr armDir)))
+            pe (+ (* (- (car e) (car armDir)) 0)  ; recomputed below
+                  0))
+      (setq pe (+ (* (- (car e) (car capPt)) (car armDir))
+                  (* (- (cadr e) (cadr capPt)) (cadr armDir))))
+      (cond
+        ((and (<= ps 0) (<= pe 0)) (entdel ent))
+        ((and (>= ps 0) (>= pe 0)) nil)
+        ((< ps 0) (entmod (subst (cons 10 capPt) (assoc 10 d) d)))
+        (t        (entmod (subst (cons 11 capPt) (assoc 11 d) d)))))))
+
+(defun hhx:cut-arm (wallEnt refPt armEnd / seg1 seg2 s1 e1 dir len
+                                            s2 e2 cap1 cap2 lay
+                                            partnerEnt osm clay armDir)
+  (setq seg1 (hole:picksegment wallEnt armEnd)
+        s1 (nth 2 seg1) e1 (nth 3 seg1)
+        dir (mapcar '- e1 s1) len (distance s1 e1)
+        dir (list (/ (car dir) len) (/ (cadr dir) len) 0.0)
+        seg2 (hole:findpartner seg1 armEnd dir))
+  (cond
+    ((null seg2) (princ "\nNo parallel partner for wall."))
+    (t
+      (setq s2 (nth 2 seg2) e2 (nth 3 seg2)
+            partnerEnt (car seg2)
+            cap1 (hole:proj armEnd s1 dir)
+            cap2 (hole:proj armEnd s2 dir))
+      ;; Arm direction (from corner outward) projected on wall dir
+      (setq armDir
+        (if (> (+ (* (- (car armEnd) (car refPt)) (car dir))
+                  (* (- (cadr armEnd) (cadr refPt)) (cadr dir))) 0)
+          dir
+          (list (- (car dir)) (- (cadr dir)) 0.0)))
+      (hhx:trim-half wallEnt   cap1 armDir)
+      (hhx:trim-half partnerEnt cap2 armDir)
+      (setq lay (cdr (assoc 8 (entget wallEnt)))
+            osm (getvar "OSMODE") clay (getvar "CLAYER"))
+      (setvar "OSMODE" 0) (setvar "CLAYER" lay)
+      (command-s "_.LINE" cap1 cap2 "")
+      (setvar "CLAYER" clay) (setvar "OSMODE" osm))))
+;; Given wall ent and two points, return (center-on-wall-line . width)
+;; measured along the wall direction (ignoring perpendicular offset).
+(defun hhx:span (ent p1 p2 / d seg s e dir len k1 k2 km)
+  (setq d (entget ent))
+  (setq seg (if (= (cdr (assoc 0 d)) "LWPOLYLINE")
+              (hole:picksegment ent p2)
+              (list ent -1 (cdr (assoc 10 d)) (cdr (assoc 11 d)))))
+  (setq s (nth 2 seg) e (nth 3 seg)
+        dir (mapcar '- e s) len (distance s e)
+        dir (list (/ (car dir) len) (/ (cadr dir) len) 0.0)
+        k1 (+ (* (- (car p1) (car s)) (car dir))
+              (* (- (cadr p1) (cadr s)) (cadr dir)))
+        k2 (+ (* (- (car p2) (car s)) (car dir))
+              (* (- (cadr p2) (cadr s)) (cadr dir)))
+        km (/ (+ k1 k2) 2.0))
+  (list (mapcar '+ s (hole:scl dir km)) (abs (- k2 k1))))
+
+(defun hhx:wall-at (pt / eps ss)
+  (setq eps 1.0
+        ss (ssget "_C"
+             (list (- (car pt) eps) (- (cadr pt) eps))
+             (list (+ (car pt) eps) (+ (cadr pt) eps))
+             '((0 . "LINE,LWPOLYLINE"))))
+  (if ss (ssname ss 0)))
+
+;; Delete wall stubs past the corner: any LINE/LWPOLYLINE whose full extent
+;; sits within `radius` of refPt (short leftover past the corner).
+(defun hhx:kill-stubs (refPt radius layer / ss n i e d ptype verts len ok)
+  (setq ss (ssget "_X"
+             (list '(0 . "LINE,LWPOLYLINE") (cons 8 layer)))
+        n (if ss (sslength ss) 0) i 0)
+  (while (< i n)
+    (setq e (ssname ss i) d (entget e) ptype (cdr (assoc 0 d)) ok nil)
+    (cond
+      ((= ptype "LINE")
+        (if (and (< (distance (cdr (assoc 10 d)) refPt) radius)
+                 (< (distance (cdr (assoc 11 d)) refPt) radius))
+          (setq ok t)))
+      ((= ptype "LWPOLYLINE")
+        (setq verts (hole:pl-verts d))
+        (if (and verts (< (length verts) 12))
+          (progn
+            (setq ok t)
+            (foreach v verts
+              (if (>= (distance v refPt) radius) (setq ok nil)))))))
+    (if ok (entdel e))
+    (setq i (1+ i))))
+
+(defun c:HHX ( / refPt p1 p2 ent1 ent2 cmde)
+  (setq refPt (getpoint "\nCorner point: "))
+  (if refPt
+    (setq p1 (getpoint refPt
+      "\nOuter end along wall 1 (click or type distance): ")))
+  (if p1
+    (setq p2 (getpoint refPt
+      "\nOuter end along wall 2 (click or type distance): ")))
+  (cond
+    ((or (null refPt) (null p1) (null p2)) (princ "\nCancelled."))
+    ((or (null (setq ent1 (hhx:wall-at p1)))
+         (null (setq ent2 (hhx:wall-at p2))))
+      (princ "\nNo wall (LINE/LWPOLYLINE) found under one of the arm ends."))
+    (t
+      (setq cmde (getvar "CMDECHO"))
+      (setvar "CMDECHO" 0)
+      (command-s "_.UNDO" "_BE")
+      (hhx:cut-arm ent1 refPt p1)
+      (hhx:cut-arm ent2 refPt p2)
+      (command-s "_.UNDO" "_E")
+      (setvar "CMDECHO" cmde)
+      (princ "\nCorner hole cut.")))
+  (princ))
+
 ;; ===================================================================
 ;; CW - Change Width of a placed AKD door/window and adjust its hole.
 ;; ===================================================================
@@ -1641,12 +2063,13 @@
       (if hit (entmod newd)) hit)))
 
 ;; Move a wall-stub endpoint at oldPt to newPt. Excludes the cap line itself.
-(defun cw:move-wall-end (oldPt newPt except / ss n i e)
+(defun cw:move-wall-end (oldPt newPt except / ss n i e done)
   (setq ss (ssget "_X" '((0 . "LINE,LWPOLYLINE")))
-        n (if ss (sslength ss) 0) i 0)
-  (while (< i n)
+        n (if ss (sslength ss) 0) i 0 done nil)
+  (while (and (< i n) (not done))
     (setq e (ssname ss i))
-    (if (and (/= e except) (cw:move-endpoint e oldPt newPt)) nil)
+    (if (and (/= e except) (cw:move-endpoint e oldPt newPt))
+      (setq done t))
     (setq i (1+ i))))
 
 ;; Resize one cap (a LINE entity): move its endpoints and the two wall stubs.
@@ -1665,19 +2088,6 @@
                  (if (= app "ADOOR") "ADOORLBL" "AWINLBL"))
     (entdel lbl)))
 
-(defun c:CWDBG ( / sel r1 r2)
-  (princ "\nCWDBG start.")
-  (setq sel (entsel "\npick: "))
-  (princ (strcat "\n sel type=" (vl-princ-to-string (type sel))
-                 " len=" (if (listp sel) (itoa (length sel)) "?")))
-  (if sel
-    (progn
-      (princ (strcat "\n car sel type=" (vl-princ-to-string (type (car sel)))))
-      (setq r1 (cw:read-xd (car sel)))
-      (princ (strcat "\n read-xd=" (vl-princ-to-string r1)))
-      (setq r2 (cw:nearest-tagged (cadr sel)))
-      (princ (strcat "\n nearest=" (vl-princ-to-string r2)))))
-  (princ))
 
 (defun c:CW ( / picked ent pk xd1 info kind xd oldW mid vdir gname typ div
                  newW halfOld halfNew capA capB eA eB basePt inp offset
@@ -1705,7 +2115,9 @@
         (setq div (cdr (assoc 1070 xd))))
       (initget "Base")
       (setq inp (getdist mid
-        (strcat "\nNew width or [Base] <" (rtos oldW 2 2) ">: ")))
+        (strcat "\n[Resize | Type: " (if (eq kind 'door) "Door" "Window")
+                " | Current: " (rtos oldW 2 2)
+                "] New width or [Base] <" (rtos oldW 2 2) ">: ")))
       (cond
         ((eq inp "Base")
           (setq basePt (getpoint "\nBase point (stays fixed): "))
@@ -1901,7 +2313,71 @@
           (princ (strcat "\n" (itoa count) " removed."))))))
   (princ))
 
-(princ (strcat "\nAKDDoorWin loaded. AD/AW=hole+door/win, ADD/AWW=2-click, CW=resize, EW=erase+repair. ["
+;; ===================================================================
+;; RH - Repair Hole. Pick two cap lines; merges wall stubs back.
+;; ===================================================================
+
+(defun rh:find-stub (pt except / ss n i e best)
+  (setq ss (ssget "_X" '((0 . "LINE,LWPOLYLINE")))
+        n (if ss (sslength ss) 0) i 0 best nil)
+  (while (and (< i n) (not best))
+    (setq e (ssname ss i))
+    (if (and (not (member e except)) (ew:has-end e pt)) (setq best e))
+    (setq i (1+ i)))
+  best)
+
+(defun rh:pair-b (stub near b1 b2 / d ptype verts far dx dy len d1 d2 o1 o2)
+  (cond
+    ((null stub) b1)
+    (t
+      (setq d (entget stub) ptype (cdr (assoc 0 d)))
+      (cond
+        ((= ptype "LINE")
+          (setq far (if (cw:eq near (cdr (assoc 10 d)))
+                      (cdr (assoc 11 d)) (cdr (assoc 10 d)))))
+        (t
+          (setq verts (hole:pl-verts d)
+                far (if (cw:eq near (car verts)) (last verts) (car verts)))))
+      (setq dx (- (car near) (car far))
+            dy (- (cadr near) (cadr far))
+            len (sqrt (+ (* dx dx) (* dy dy))))
+      (if (zerop len) b1
+        (progn
+          (setq dx (/ dx len) dy (/ dy len)
+                d1 (mapcar '- b1 near) d2 (mapcar '- b2 near)
+                o1 (abs (- (* (car d1) dy) (* (cadr d1) dx)))
+                o2 (abs (- (* (car d2) dy) (* (cadr d2) dx))))
+          (if (< o1 o2) b1 b2))))))
+
+(defun c:RH ( / capA capB dA dB a1 a2 b1 b2
+                sa1 sa2 sb1 sb2 pA1 pA2 stubB1 stubB2 cmde)
+  (setq capA (car (entsel "\nPick FIRST cap line: ")))
+  (setq capB (if capA (car (entsel "\nPick OPPOSITE cap line: "))))
+  (cond
+    ((or (null capA) (null capB)) (princ "\nCancelled."))
+    (t
+      (setq cmde (getvar "CMDECHO")) (setvar "CMDECHO" 0)
+      (command-s "_.UNDO" "_BE")
+      (setq dA (entget capA) dB (entget capB)
+            a1 (cdr (assoc 10 dA)) a2 (cdr (assoc 11 dA))
+            b1 (cdr (assoc 10 dB)) b2 (cdr (assoc 11 dB))
+            sa1 (rh:find-stub a1 (list capA capB))
+            sa2 (rh:find-stub a2 (list capA capB))
+            sb1 (rh:find-stub b1 (list capA capB))
+            sb2 (rh:find-stub b2 (list capA capB))
+            pA1 (rh:pair-b sa1 a1 b1 b2)
+            pA2 (if (equal pA1 b1) b2 b1)
+            stubB1 (if (equal pA1 b1) sb1 sb2)
+            stubB2 (if (equal pA1 b1) sb2 sb1))
+      (entdel capA) (entdel capB)
+      (ew:rejoin sa1 stubB1 a1 pA1 "Face 1")
+      (ew:rejoin sa2 stubB2 a2 pA2 "Face 2")
+      (command-s "_.UNDO" "_E")
+      (setvar "CMDECHO" cmde)
+      (princ "\nHole repaired.")))
+  (princ))
+
+(princ (strcat "\nAKDDoorWin loaded. AD/AW/AC=hole+door/win/curtain, ADD/AWW/ACC=2-click, AXW/HHX=corner win/hole, CW=resize, EW=erase+repair. ["
                (hole:getm) " W=" (rtos (hole:getw) 2 2)
                " G=" (rtos (hole:getg) 2 2) "]"))
 (princ)
