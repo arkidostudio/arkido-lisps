@@ -2063,13 +2063,12 @@
       (if hit (entmod newd)) hit)))
 
 ;; Move a wall-stub endpoint at oldPt to newPt. Excludes the cap line itself.
-(defun cw:move-wall-end (oldPt newPt except / ss n i e done)
+(defun cw:move-wall-end (oldPt newPt except / ss n i e)
   (setq ss (ssget "_X" '((0 . "LINE,LWPOLYLINE")))
-        n (if ss (sslength ss) 0) i 0 done nil)
-  (while (and (< i n) (not done))
+        n (if ss (sslength ss) 0) i 0)
+  (while (< i n)
     (setq e (ssname ss i))
-    (if (and (/= e except) (cw:move-endpoint e oldPt newPt))
-      (setq done t))
+    (if (/= e except) (cw:move-endpoint e oldPt newPt))
     (setq i (1+ i))))
 
 ;; Resize one cap (a LINE entity): move its endpoints and the two wall stubs.
