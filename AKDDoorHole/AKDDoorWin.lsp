@@ -1217,7 +1217,7 @@
                           "A D S Panels" 'hd:extra 'hd:status))
 (defun c:AW () (hole:loop 'hole:post-window "window" 'hw:getw 'hw:setw
                           "Divisions S" 'hw:extra 'hw:status))
-(defun c:AC ()
+(defun c:ACW ()
   (hole:loop 'hole:post-curtain "curtain" 'ac:getw 'ac:setw
              "Spacing Divisions" 'ac:extra 'ac:status))
 
@@ -1316,7 +1316,7 @@
       (akd:place-window p1 p2)
       (setq *win-div* oldDiv *win-slide* oldSlide *win-tag-type* oldType))))
 
-(defun c:ACC ( / p1 p2 nd sp)
+(defun c:ACWW ( / p1 p2 nd sp)
   (princ (strcat "\nCurtain Wall. "
                  (if (= *ac-mode* "M")
                    (strcat "Spacing=" (rtos *ac-spacing* 2 0))
@@ -2377,7 +2377,7 @@
       (princ "\nHole repaired.")))
   (princ))
 
-(princ (strcat "\nAKDDoorWin loaded. AD/AW/AC=hole+door/win/curtain, ADD/AWW/ACC=2-click, AXW/HHX=corner win/hole, CW=resize, EW=erase+repair. ["
+(princ (strcat "\nAKDDoorWin loaded. AD/AW/ACW=hole+door/win/curtain, ADD/AWW/ACWW=2-click, AXW/HHX=corner win/hole, CW=resize, EW=erase+repair. ["
                (hole:getm) " W=" (rtos (hole:getw) 2 2)
                " G=" (rtos (hole:getg) 2 2) "]"))
 (princ)

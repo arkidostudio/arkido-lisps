@@ -11,7 +11,7 @@ Plan-view door and window tool that cuts the opening through a two-parallel-line
 | `HH` | Cut a hole only (no door/window). Options: `Center`/`FromWall`/`Width`/`Gap`. |
 | `AD` | Cuts hole and places a door. Options: `A`=Single leaf, `D`=Double, `S`=Sliding, `Panels`, plus width/placement/gap. |
 | `AW` | Cuts hole and places a window. Options: `Divisions`, `S`=toggle sliding (adds mullion ticks). |
-| `AC` | Cuts hole and places a curtain wall. `S`=Spacing mode (then `S`=set value), `D`=Divisions mode (then `D`=set value). |
+| `ACW` | Cuts hole and places a curtain wall. `S`=Spacing mode (then `S`=set value), `D`=Divisions mode (then `D`=set value). |
 
 Type a number at the main prompt to set width directly (e.g. `AD` then `800` = 800mm door width).
 
@@ -21,7 +21,7 @@ Type a number at the main prompt to set width directly (e.g. `AD` then `800` = 8
 |---|---|
 | `ADD` | Draw a door between two picked points. Same type shortcuts. |
 | `AWW` | Draw a window between two picked points. |
-| `ACC` | Draw a curtain wall between two picked points. |
+| `ACWW` | Draw a curtain wall between two picked points. |
 
 ### Corner tools
 
@@ -49,7 +49,7 @@ Type a number at the main prompt to set width directly (e.g. `AD` then `800` = 8
 
 ## Wall requirements
 
-`HH`, `AD`, `AW`, `AC`, `CW`, `EW`, `RH` need the wall drawn as **two parallel lines** (`LINE` or `LWPOLYLINE`) on the same layer. Click one line — the parallel partner is auto-detected. Cap lines are drawn on the wall's own layer so `EW`/`RH` can find them again later. Works with walls drawn by `WW.lsp`.
+`HH`, `AD`, `AW`, `ACW`, `CW`, `EW`, `RH` need the wall drawn as **two parallel lines** (`LINE` or `LWPOLYLINE`) on the same layer. Click one line — the parallel partner is auto-detected. Cap lines are drawn on the wall's own layer so `EW`/`RH` can find them again later. Works with walls drawn by `WW.lsp`.
 
 ## Notes
 
