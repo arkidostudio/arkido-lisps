@@ -35,7 +35,7 @@ Type a number at the main prompt to set width directly (e.g. `AD` then `800` = 8
 | Command | What it does |
 |---|---|
 | `CW` | Click a placed door/window → prompts new width, resizes the opening + object together. `Base` locks a picked point while the opposite jamb moves. |
-| `EW` | Select one or many placed doors/windows → deletes each and closes the wall back up. Works with LINE walls and open/closed LWPOLYLINE walls. |
+| `EW` | Select one or many placed doors/windows → deletes each and closes the wall back up. Works with LINE walls and open/closed LWPOLYLINE walls. Also erases AKDColumn (`AKCOL*`) groups when a column is picked (walls the column split are **not** rejoined — undo or redraw). |
 | `RH` | Repair Hole: pick the two cap lines of a hole (e.g. one cut by `HH` or `HHX`) → deletes them and merges the wall stubs back into continuous lines. Use when you cut a hole but decided against placing a door/window. |
 
 ### Counts, renumbering, labels, schedule
@@ -46,6 +46,8 @@ Type a number at the main prompt to set width directly (e.g. `AD` then `800` = 8
 | `DC` / `DR` | Door count by width / renumber. |
 | `LT` / `LC` | Labels on/off / continuous vs new-batch numbering. |
 | `DWT` | Draw doors & windows schedule table at a picked point. |
+| `DDW` | Thicken a line drawing into a door/window frame. Pick outer closed polyline (offset inward) + interior mullion lines (offset ±½ width each side, trimmed to inner boundary). Frame width from `*cfg-win-fw*`. |
+| `SET` | Pop-up settings dialog (DCL). Pick Category → Setting → enter new value or layer/color. Falls back to command-line prompts if `AKDDoorWin.dcl` isn't on the support path. |
 
 ## Wall requirements
 
@@ -56,7 +58,7 @@ Type a number at the main prompt to set width directly (e.g. `AD` then `800` = 8
 - Each placed door/window gets a centered text label (height 100) showing its width, grouped so `CW`/`EW` can find and manipulate it as a whole.
 - Placement commands remember their last width, type, divisions, and Center/FromWall mode in session state.
 - `CW` and `EW` accept pre-selected objects: pick the door(s) first, then run the command.
-- Color/layer/dimension config lives at the top of `AKDDoorWin.lsp`.
+- Color/layer/dimension config lives at the top of `AKDDoorWin.lsp`. Use `SET` in-drawing, or drop an `AKDDoorWin.cfg` file next to the .lsp with `(setq *cfg-...* ...)` lines to persist overrides across updates.
 
 ## Load
 

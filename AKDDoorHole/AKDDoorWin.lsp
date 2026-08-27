@@ -31,7 +31,8 @@
 
 ;; Labels (all types)
 (setq *cfg-lbl-shape*     '("X-TAGS & SYMBOLS" . 1))  ; hexagon / circle (red)
-(setq *cfg-lbl-text*      '("X-TAGS & SYMBOLS" . 2))  ; text (yellow)
+(setq *cfg-lbl-text*      '("X-TAGS & SYMBOLS" . 2))  ; label text (yellow)
+(setq *cfg-dim-text*      '("Defpoints"        . 1))  ; middle dimension text (red on Defpoints)
 
 ;; Dimensions (in drawing units)
 (setq *cfg-win-fw*        50.0)   ; window frame width along wall
@@ -45,6 +46,19 @@
 (setq *cfg-slide-p*       35.0)   ; sliding panel thickness (per track)
 (setq *cfg-slide-ext*     25.0)   ; sliding-panel extension past meeting
 (setq *cfg-slide-wall-off* 75.0)  ; sliding wall-line offset each side
+
+;; Pocket door (dimensions in mm)
+(setq *cfg-pd-opening*   700.0)   ; opening width (leaf swing area)
+(setq *cfg-pd-jamb*       50.0)   ; jamb length along wall (both ends)
+(setq *cfg-pd-jamb-h*     65.0)   ; leftmost jamb depth across wall
+(setq *cfg-pd-grey-t*     75.0)   ; pocket wall (front) thickness across
+(setq *cfg-pd-leaf-t*     40.0)   ; leaf thickness across
+(setq *cfg-pd-stud-t*     25.0)   ; support stud thickness across
+(setq *cfg-pd-gyp-t*      10.0)   ; gypsum board thickness across
+(setq *cfg-pd-stud-w*     50.0)   ; support stud length along wall
+(setq *cfg-pd-lipext*     50.0)   ; leaf lip past pocket wall
+(setq *cfg-pd-groove*     18.0)   ; right jamb groove depth
+(setq *cfg-pd-grey*      '("A-DOOR" . 8))  ; grey pocket wall (grey)
 
 (setq *cfg-lbl-hex-r*    250.0)   ; window label hexagon radius (500 dia)
 (setq *cfg-lbl-cir-r*    225.0)   ; door label circle radius (450 dia)
@@ -466,7 +480,7 @@
       (setq ents (cons (_mkline (_sub p1 (_scale perp os))
                                 (_sub p2 (_scale perp os)) *cfg-win-wall*) ents))
       (setq ents (cons (_mktext mid 100.0 (_txt-ang ang)
-                                (rtos width 2 0) *cfg-lbl-text*) ents))
+                                (rtos width 2 0) *cfg-dim-text*) ents))
       (setq gname (_uniqname "AWIN"))
       (_mkgroup gname (reverse ents))
       (_tagwin (car ents) width *win-div*
@@ -593,7 +607,8 @@
               (list "ADOOR"
                     (cons 1000 "ADOOR")
                     (cons 1040 w)
-                    (cons 1070 (cond ((eq typ "D") 2) ((eq typ "G") 3) (1)))
+                    (cons 1070 (cond ((eq typ "D") 2) ((eq typ "G") 3)
+                                     ((eq typ "P") 4) (1)))
                     (cons 1071 dv)
                     (cons 1042 side)
                     (cons 1041 (float *label-batch*))
@@ -697,6 +712,200 @@
         (setq i (1+ i)))
       (reverse panels))))
 
+;; --- pocket door helpers -------------------------------------------
+(defun _pd-corner (origin v perp fy x y)
+  (_add origin (_add (_scale v x) (_scale perp (* y fy)))))
+
+(defun _pd-rect (x0 x1 y0 y1 origin v perp fy cfg)
+  (_mkpline
+    (list (_pd-corner origin v perp fy x0 y0)
+          (_pd-corner origin v perp fy x1 y0)
+          (_pd-corner origin v perp fy x1 y1)
+          (_pd-corner origin v perp fy x0 y1))
+    cfg))
+
+(defun _mkpline-open (pts cfg / lyr)
+  (setq lyr (car cfg)) (_ensure-layer lyr)
+  (entmakex
+    (append
+      (list '(0 . "LWPOLYLINE") '(100 . "AcDbEntity") (cons 8 lyr)
+            '(100 . "AcDbPolyline") (cons 90 (length pts))
+            '(70 . 0) (cons 62 (cdr cfg)))
+      (mapcar '(lambda (p) (list 10 (car p) (cadr p))) pts))))
+
+(defun _pd-solid (x0 x1 y0 y1 origin v perp fy col / c1 c2 c3 c4)
+  (setq c1 (_pd-corner origin v perp fy x0 y0)
+        c2 (_pd-corner origin v perp fy x1 y0)
+        c3 (_pd-corner origin v perp fy x1 y1)
+        c4 (_pd-corner origin v perp fy x0 y1))
+  (_ensure-layer "A-DOOR")
+  (entmakex (list
+    '(0 . "SOLID") '(100 . "AcDbEntity") '(8 . "A-DOOR")
+    (cons 62 col) '(100 . "AcDbTrace")
+    (list 10 (car c1) (cadr c1) 0.0)
+    (list 11 (car c2) (cadr c2) 0.0)
+    (list 12 (car c4) (cadr c4) 0.0)
+    (list 13 (car c3) (cadr c3) 0.0))))
+
+(defun _pd-x (x0 x1 y0 y1 origin v perp fy cfg / c1 c2 c3 c4)
+  (setq c1 (_pd-corner origin v perp fy x0 y0)
+        c2 (_pd-corner origin v perp fy x1 y0)
+        c3 (_pd-corner origin v perp fy x1 y1)
+        c4 (_pd-corner origin v perp fy x0 y1))
+  (list (_mkpline-open (list c1 c3) cfg) (_mkpline-open (list c2 c4) cfg)))
+
+;; Draw all pocket-door components; returns updated ents list.
+;; Layout (across wall, +y = grey-wall side / "front"):
+;;   yGF=+fdH -------- grey wall front face
+;;   yGB=yGF-gT ------ grey back / leaf front
+;;   yLB=yGB-lT ------ leaf back / stud front
+;;   ySB=yLB-sT ------ stud back / gyp front
+;;   yGyB=ySB-gyT = -fdH  gyp back face
+(defun akd:pd-parts (p1 p2 v perp fx fy ents / origin dir totalW opening jamb
+                                                fd fdH gT lT sT gyT jH sW lip gr
+                                                yGF yGB yLB ySB yGyB greyLen
+                                                midX rSupX)
+  (setq totalW  (distance p1 p2)
+        fd      *cfg-door-fd*
+        fdH     (/ fd 2.0)
+        opening *cfg-pd-opening*
+        jamb    *cfg-pd-jamb*
+        jH      *cfg-pd-jamb-h*
+        gT      *cfg-pd-grey-t*
+        lT      *cfg-pd-leaf-t*
+        sT      *cfg-pd-stud-t*
+        gyT     *cfg-pd-gyp-t*
+        sW      *cfg-pd-stud-w*
+        lip     *cfg-pd-lipext*
+        gr      *cfg-pd-groove*
+        greyLen (- totalW opening lip jamb)
+        yGF     (- fdH (/ (- fd (+ gT lT sT gyT)) 2.0))
+        yGB     (- yGF gT)
+        yLB     (- yGB lT)
+        ySB     (- yLB sT)
+        yGyB    (- ySB gyT)
+        origin  (if (< fx 0) p2 p1)
+        dir     (if (< fx 0) (_scale v -1.0) v))
+  (cond
+    ((< greyLen (+ opening 150.0))
+      (princ (strcat "\nPocket door: wall too short. Need "
+                     (rtos (+ (* 2.0 opening) 250.0) 2 0)
+                     " for " (rtos opening 2 0) " clear opening, got "
+                     (rtos totalW 2 0) "."))
+      ents)
+    (t
+      ;; Wall lines: only in the opening (between greyWall right and strikeFrame left)
+      (setq ents (cons (_mkpline-open (list
+        (_pd-corner origin dir perp fy greyLen yGF)
+        (_pd-corner origin dir perp fy (- totalW jamb) yGF))
+        *cfg-door-wall*) ents))
+      (setq ents (cons (_mkpline-open (list
+        (_pd-corner origin dir perp fy greyLen yGyB)
+        (_pd-corner origin dir perp fy (- totalW jamb) yGyB))
+        *cfg-door-wall*) ents))
+      ;; Grey pocket wall: solid color-9 fill + outline (outline drawn on top)
+      (setq ents (cons (_pd-solid 0.0 greyLen yGB yGF
+                                  origin dir perp fy 9) ents))
+      (setq ents (cons (_pd-rect 0.0 greyLen yGB yGF
+                                 origin dir perp fy *cfg-pd-grey*) ents))
+      (command "_.DRAWORDER" (car ents) "" "_F")
+      ;; Gypsum back board (starts at x=0)
+      (setq ents (cons (_pd-rect 0.0 greyLen yGyB ySB
+                                 origin dir perp fy *cfg-door-frame*) ents))
+      ;; Leaf: starts AFTER jambPost, extends jamb-length past greyWall (lip)
+      (setq ents (cons (_pd-rect jamb (+ jamb greyLen) yLB yGB
+                                 origin dir perp fy *cfg-door-panel*) ents))
+      ;; jambPost 50 x 65: at x=[0, jamb], spans stud + leaf zone
+      (setq ents (cons (_pd-rect 0.0 jamb ySB yGB
+                                 origin dir perp fy *cfg-door-frame*) ents))
+      (foreach x (_pd-x 0.0 jamb ySB yGB
+                        origin dir perp fy *cfg-door-frame*)
+        (setq ents (cons x ents)))
+      ;; endStud (aligned with greyWall right end)
+      (setq rSupX (- greyLen sW))
+      (setq ents (cons (_pd-rect rSupX (+ rSupX sW) ySB yLB
+                                 origin dir perp fy *cfg-door-frame*) ents))
+      (foreach x (_pd-x rSupX (+ rSupX sW) ySB yLB
+                        origin dir perp fy *cfg-door-frame*)
+        (setq ents (cons x ents)))
+      ;; midStud, midway between jambPost right and endStud left
+      (setq midX (- (/ (+ jamb rSupX) 2.0) (/ sW 2.0)))
+      (setq ents (cons (_pd-rect midX (+ midX sW) ySB yLB
+                                 origin dir perp fy *cfg-door-frame*) ents))
+      (foreach x (_pd-x midX (+ midX sW) ySB yLB
+                        origin dir perp fy *cfg-door-frame*)
+        (setq ents (cons x ents)))
+      ;; strikeFrame: full wall thickness (10 taller than before), C-shape with groove
+      (setq ents (cons (_mkpline
+        (list (_pd-corner origin dir perp fy (- totalW jamb) yGF)
+              (_pd-corner origin dir perp fy totalW yGF)
+              (_pd-corner origin dir perp fy totalW yGyB)
+              (_pd-corner origin dir perp fy (- totalW jamb) yGyB)
+              (_pd-corner origin dir perp fy (- totalW jamb) yLB)
+              (_pd-corner origin dir perp fy (+ (- totalW jamb) gr) yLB)
+              (_pd-corner origin dir perp fy (+ (- totalW jamb) gr) yGB)
+              (_pd-corner origin dir perp fy (- totalW jamb) yGB))
+        *cfg-door-frame*) ents))
+      ents)))
+
+(defun _pd-ghost-box (x0 x1 y0 y1 origin v perp fy / a b c d)
+  (setq a (_pd-corner origin v perp fy x0 y0)
+        b (_pd-corner origin v perp fy x1 y0)
+        c (_pd-corner origin v perp fy x1 y1)
+        d (_pd-corner origin v perp fy x0 y1))
+  (_grseg a b) (_grseg b c) (_grseg c d) (_grseg d a))
+
+(defun _ghost-pocket (p1 p2 v perp fw fd pt-thk fx fy /
+                        origin dir totalW opening jamb gT lT sT gyT lip gr
+                        yGF yGB yLB ySB yGyB greyLen fdH totPd off tj)
+  (setq totalW  (distance p1 p2)
+        fdH     (/ fd 2.0)
+        opening *cfg-pd-opening*
+        jamb    *cfg-pd-jamb*
+        gT      *cfg-pd-grey-t*
+        lT      *cfg-pd-leaf-t*
+        sT      *cfg-pd-stud-t*
+        gyT     *cfg-pd-gyp-t*
+        lip     *cfg-pd-lipext*
+        gr      *cfg-pd-groove*
+        greyLen (- totalW opening lip jamb)
+        totPd   (+ gT lT sT gyT)
+        off     (/ (- fd totPd) 2.0)
+        yGF     (- fdH off)
+        yGB     (- yGF gT)
+        yLB     (- yGB lT)
+        ySB     (- yLB sT)
+        yGyB    (- ySB gyT)
+        origin  (if (< fx 0) p2 p1)
+        dir     (if (< fx 0) (_scale v -1.0) v)
+        tj      (- totalW jamb))
+  (cond
+    ((< greyLen (+ opening 150.0)) nil)
+    (t
+      (_pd-ghost-box 0.0 greyLen yGB yGF origin dir perp fy)
+      (_pd-ghost-box jamb (+ jamb greyLen) yLB yGB origin dir perp fy)
+      (_pd-ghost-box 0.0 greyLen yGyB ySB origin dir perp fy)
+      (_grseg (_pd-corner origin dir perp fy greyLen yGF)
+              (_pd-corner origin dir perp fy tj yGF))
+      (_grseg (_pd-corner origin dir perp fy greyLen yGyB)
+              (_pd-corner origin dir perp fy tj yGyB))
+      (_grseg (_pd-corner origin dir perp fy tj yGF)
+              (_pd-corner origin dir perp fy totalW yGF))
+      (_grseg (_pd-corner origin dir perp fy totalW yGF)
+              (_pd-corner origin dir perp fy totalW yGyB))
+      (_grseg (_pd-corner origin dir perp fy totalW yGyB)
+              (_pd-corner origin dir perp fy tj yGyB))
+      (_grseg (_pd-corner origin dir perp fy tj yGyB)
+              (_pd-corner origin dir perp fy tj yLB))
+      (_grseg (_pd-corner origin dir perp fy tj yLB)
+              (_pd-corner origin dir perp fy (+ tj gr) yLB))
+      (_grseg (_pd-corner origin dir perp fy (+ tj gr) yLB)
+              (_pd-corner origin dir perp fy (+ tj gr) yGB))
+      (_grseg (_pd-corner origin dir perp fy (+ tj gr) yGB)
+              (_pd-corner origin dir perp fy tj yGB))
+      (_grseg (_pd-corner origin dir perp fy tj yGB)
+              (_pd-corner origin dir perp fy tj yGF)))))
+
 ;; --- ghosts --------------------------------------------------------
 (defun _ghost (p1 p2 v perp fw fd pt-thk fx fy / c wperp)
   (setq wperp (_scale perp (/ fd 2.0)))
@@ -743,9 +952,9 @@
   (setq fw *cfg-door-fw* fd *cfg-door-fd* pt-thk *cfg-door-panel-t*)
   (while
     (progn
-      (initget "A D S P")
+      (initget "A D S Pocket Number")
       (setq p1 (getpoint
-                 (strcat "\nFirst door point or [A=Single/D=Double/S=sliding/Panels] ("
+                 (strcat "\nFirst door point or [A=Single/D=Double/S=sliding/Pocket/Number] ("
                          *door-type*
                          (if (eq *door-type* "G")
                            (strcat ", " (itoa *slide-div*) "p") "")
@@ -759,7 +968,8 @@
          (setq tk (getint
                     (strcat "\nSliding panels <" (itoa *slide-div*) ">: ")))
          (if tk (setq *slide-div* tk)) t)
-        ((eq p1 "P")
+        ((eq p1 "Pocket") (setq *door-type* "P") t)
+        ((eq p1 "Number")
          (initget 6)
          (setq tk (getint
                     (strcat "\nSliding panels <" (itoa *slide-div*) ">: ")))
@@ -791,6 +1001,7 @@
         (setq fw *cfg-slide-fw* fd (_slide-fd *slide-div*)))
       (setq ghost-fn (cond ((eq *door-type* "D") '_ghost-dbl)
                            ((eq *door-type* "G") '_ghost-slide)
+                           ((eq *door-type* "P") '_ghost-pocket)
                            ('_ghost)))
       (princ "\nMove mouse to flip, click to place: ")
       (apply ghost-fn (list p1 p2 v perp fw fd pt-thk fx fy))
@@ -815,13 +1026,18 @@
             (t t))))
       (redraw)
       (cond
-        ((null fx) (princ "\nCancelled."))
+        ((null fx) (setq *akd-cancel* T) (princ "\nCancelled — hole reverted."))
         (t
           (setvar "CMDECHO" 0)
           (command "_.UNDO" "_BE")
-          (setq ents (cons (_rect p1 (_add p1 (_scale v fw)) perp fd *cfg-door-frame*) ents))
-          (setq ents (cons (_rect p2 (_sub p2 (_scale v fw)) perp fd *cfg-door-frame*) ents))
           (cond
+            ((eq *door-type* "P")
+              (setq ents (akd:pd-parts p1 p2 v perp fx fy ents)))
+            (t
+              (setq ents (cons (_rect p1 (_add p1 (_scale v fw)) perp fd *cfg-door-frame*) ents))
+              (setq ents (cons (_rect p2 (_sub p2 (_scale v fw)) perp fd *cfg-door-frame*) ents))))
+          (cond
+            ((eq *door-type* "P") nil)
             ((eq *door-type* "G")
               (foreach pn (_slide-corners p1 p2 v perp fw fd fy *slide-div*)
                 (setq ents (cons (_mkpline pn *cfg-door-panel*) ents)))
@@ -845,7 +1061,7 @@
                 (_mkpline (list (nth 0 c) (nth 1 c) (nth 3 c) (nth 2 c)) *cfg-door-panel*) ents))
               (setq ents (cons (_mkarc (nth 0 c) (nth 4 c) (nth 5 c) (nth 6 c) *cfg-door-arc*) ents))))
           (setq ents (cons (_mktext mid 100.0 (_txt-ang ang)
-                                    (rtos width 2 0) *cfg-lbl-text*) ents))
+                                    (rtos width 2 0) *cfg-dim-text*) ents))
           (setq gname (_uniqname "ADOOR"))
           (_mkgroup gname (reverse ents))
           (_tagdoor (car ents) width *door-type*
@@ -1214,7 +1430,7 @@
 
 (defun c:HH () (hole:loop nil "hole" 'hole:getw 'hole:setw "" nil nil))
 (defun c:AD () (hole:loop 'hole:post-door "door" 'hd:getw 'hd:setw
-                          "A D S Panels" 'hd:extra 'hd:status))
+                          "A D S Pocket Number" 'hd:extra 'hd:status))
 (defun c:AW () (hole:loop 'hole:post-window "window" 'hw:getw 'hw:setw
                           "Divisions S" 'hw:extra 'hw:status))
 (defun c:ACW ()
@@ -1230,6 +1446,8 @@
   (strcat "Type: " (cond ((= *door-type* "D") "Double")
                          ((= *door-type* "G")
                            (strcat "Sliding/" (itoa *slide-div*) "p"))
+                         ((= *door-type* "P")
+                           (strcat "Pocket/open " (rtos *cfg-pd-opening* 2 0)))
                          (t "Single"))))
 
 (defun hw:status ()
@@ -1245,8 +1463,13 @@
 (defun hole:mid (a b) (mapcar '(lambda (x y) (/ (+ x y) 2.0)) a b))
 
 (defun hole:setw (v) (setvar "USERR1" v))
-(defun hd:getw () (if *hd-w* *hd-w* 900.0))
-(defun hd:setw (v) (setq *hd-w* v))
+(defun hd:getw ()
+  (cond ((= *door-type* "P") (+ (* 2.0 *cfg-pd-opening*) 250.0))
+        (*hd-w* *hd-w*)
+        (t 900.0)))
+(defun hd:setw (v)
+  (cond ((= *door-type* "P") (setq *cfg-pd-opening* v))
+        (t (setq *hd-w* v))))
 (defun hw:getw () (if *hw-w* *hw-w* 1200.0))
 (defun hw:setw (v) (setq *hw-w* v))
 (defun ac:getw () (if *ac-w* *ac-w* 4800.0))
@@ -1257,7 +1480,8 @@
     ((= kw "A") (setq *door-type* "S") (princ "\nDoor: Single leaf.") t)
     ((= kw "D") (setq *door-type* "D") (princ "\nDoor: Double leaf.") t)
     ((= kw "S") (setq *door-type* "G") (princ "\nDoor: Sliding.") t)
-    ((= kw "Panels")
+    ((= kw "Pocket") (setq *door-type* "P") (princ "\nDoor: Pocket.") t)
+    ((= kw "Number")
       (initget 6)
       (setq v (getint (strcat "\nSliding panels <" (itoa *slide-div*) ">: ")))
       (if v (setq *slide-div* v)) t)
@@ -1562,9 +1786,11 @@
             (setq ent (ssname ss 0)
                   oldw (getvar "USERR1"))
             (setvar "USERR1" (apply wget nil))
+            (setq *akd-cancel* nil)
             (command-s "_.UNDO" "_BE")
             (hole:do ent inp post)
             (command-s "_.UNDO" "_E")
+            (if *akd-cancel* (command-s "_.U"))
             (setvar "USERR1" oldw))))))
   (princ))
 
@@ -2109,9 +2335,12 @@
       (if (eq kind 'door)
         (setq typ (cond ((= (cdr (assoc 1070 xd)) 2) "D")
                         ((= (cdr (assoc 1070 xd)) 3) "G")
+                        ((= (cdr (assoc 1070 xd)) 4) "P")
                         (t "S"))
               div (cdr (assoc 1071 xd)))
         (setq div (cdr (assoc 1070 xd))))
+      (if (eq typ "P")
+        (progn (princ "\nCW cannot resize pocket doors — delete and redraw.") (exit)))
       (initget "Base")
       (setq inp (getdist mid
         (strcat "\n[Resize | Type: " (if (eq kind 'door) "Door" "Window")
@@ -2273,7 +2502,122 @@
       (ew:rejoin s2a s2b aw2 bw2 "Wall2")
       (cw:delete-group gname app))))
 
-(defun c:EW ( / preSet preSs ss n i e info gn seen infos cmde count)
+;; ---- AKD door/window group lookup (avoid nearest-tagged mis-hits) --
+(defun ew:akd-groups ( / gd res nm)
+  (setq gd (dictsearch (namedobjdict) "ACAD_GROUP") nm nil res nil)
+  (foreach p gd
+    (cond
+      ((= (car p) 3) (setq nm (cdr p)))
+      ((= (car p) 350)
+        (if (and nm
+                 (or (wcmatch (strcase nm) "AWIN*") (wcmatch (strcase nm) "ADOOR*"))
+                 (not (wcmatch (strcase nm) "*LBL*")))
+          (setq res (cons (cons nm
+                     (mapcar 'cdr (vl-remove-if-not
+                        '(lambda (x) (= (car x) 340)) (entget (cdr p)))))
+                    res)))
+        (setq nm nil))))
+  res)
+
+(defun ew:group-of-ent (e groups / found)
+  (setq found nil)
+  (foreach g groups
+    (if (and (not found) (member e (cdr g))) (setq found g)))
+  found)
+
+(defun ew:info-from-group (g / found)
+  (setq found nil)
+  (foreach m (cdr g)
+    (if (and (not found) (entget m))
+      (setq found (cw:read-xd m))))
+  found)
+
+;; ---- AKDColumn (AKCOL*) group erase support ------------------------
+;; ponytail: erase-only. We delete the AKCOL group + AWALL POINTs in its
+;; bbox, but do NOT rejoin the walls the column split. Undo/redraw if needed.
+
+(defun col:akcol-groups ( / gd res nm)
+  (setq gd (dictsearch (namedobjdict) "ACAD_GROUP") nm nil res nil)
+  (foreach p gd
+    (cond
+      ((= (car p) 3) (setq nm (cdr p)))
+      ((= (car p) 350)
+        (if (and nm (wcmatch (strcase nm) "AKCOL*"))
+          (setq res (cons (cons nm
+                     (mapcar 'cdr (vl-remove-if-not
+                        '(lambda (x) (= (car x) 340)) (entget (cdr p)))))
+                    res)))
+        (setq nm nil))))
+  res)
+
+(defun col:pl-bbox (ent / d verts xs ys)
+  (setq d (entget ent)
+        verts (mapcar 'cdr (vl-remove-if-not
+                 '(lambda (x) (= (car x) 10)) d)))
+  (if verts
+    (progn (setq xs (mapcar 'car verts) ys (mapcar 'cadr verts))
+           (list (list (apply 'min xs) (apply 'min ys))
+                 (list (apply 'max xs) (apply 'max ys))))))
+
+(defun col:pt-in-bb (pt bb)
+  (and pt bb
+       (>= (car pt)  (caar bb)) (<= (car pt)  (car (cadr bb)))
+       (>= (cadr pt) (cadar bb)) (<= (cadr pt) (cadr (cadr bb)))))
+
+(defun col:point-of (e / d)
+  (setq d (entget e))
+  (cond ((cdr (assoc 10 d))) ((cdr (assoc 11 d))) (t nil)))
+
+;; Return (gname . members) for AKCOL group that owns ent, else nil.
+(defun col:group-of-ent (e / groups found)
+  (setq groups (col:akcol-groups) found nil)
+  (foreach g groups
+    (if (and (not found) (member e (cdr g))) (setq found g)))
+  found)
+
+;; Given a point, find AKCOL group whose S-COLUMN polyline bbox contains it.
+(defun col:group-at-point (pt / groups found bb)
+  (setq groups (col:akcol-groups) found nil)
+  (foreach g groups
+    (if (not found)
+      (foreach m (cdr g)
+        (if (and (not found) (entget m)
+                 (= (cdr (assoc 0 (entget m))) "LWPOLYLINE")
+                 (= (cdr (assoc 8 (entget m))) "S-COLUMN"))
+          (progn (setq bb (col:pl-bbox m))
+                 (if (col:pt-in-bb pt bb) (setq found g)))))))
+  found)
+
+;; Resolve a picked entity to an AKCOL group, else nil.
+(defun col:resolve (e / d lay)
+  (setq d (entget e) lay (cdr (assoc 8 d)))
+  (cond
+    ((= lay "S-COLUMN") (col:group-of-ent e))
+    ((= lay "A-WALL-DATA") (col:group-at-point (col:point-of e)))
+    (t nil)))
+
+;; Erase every member of the AKCOL group + AWALL POINTs on A-WALL-DATA
+;; whose coord lies inside the group's S-COLUMN polyline bbox.
+(defun col:erase-group (g / members bb ss n i e)
+  (setq members (cdr g) bb nil)
+  (foreach m members
+    (if (and (not bb) (entget m)
+             (= (cdr (assoc 0 (entget m))) "LWPOLYLINE")
+             (= (cdr (assoc 8 (entget m))) "S-COLUMN"))
+      (setq bb (col:pl-bbox m))))
+  (foreach m members (if (entget m) (entdel m)))
+  (if bb
+    (progn
+      (setq ss (ssget "_X" (list '(8 . "A-WALL-DATA") '(-3 ("AWALL"))))
+            n (if ss (sslength ss) 0) i 0)
+      (while (< i n)
+        (setq e (ssname ss i))
+        (if (and (entget e) (col:pt-in-bb (col:point-of e) bb))
+          (entdel e))
+        (setq i (1+ i))))))
+
+(defun c:EW ( / preSet preSs ss n i e info gn seen infos cmde count
+              cg colgs colcount akdGroups g)
   (setq preSet (ssgetfirst) preSs (cadr preSet))
   (cond
     ((and preSs (> (sslength preSs) 0))
@@ -2284,32 +2628,48 @@
   (cond
     ((null ss) (princ "\nNothing selected."))
     (t
-      (setq n (sslength ss) i 0 seen nil infos nil)
+      (setq n (sslength ss) i 0 seen nil infos nil colgs nil)
+      (setq akdGroups (ew:akd-groups))
       (while (< i n)
-        (setq e (ssname ss i)
-              info (cw:read-xd e))
-        (if (null info)
-          (setq info (cw:nearest-tagged (cw:get-pk-of e))))
-        (if info
-          (progn
-            (setq gn (_extract-gname (cadr info)))
-            (if (and gn (not (member gn seen)))
-              (setq seen (cons gn seen)
-                    infos (cons info infos)))))
+        (setq e (ssname ss i))
+        (setq cg (col:resolve e))
+        (cond
+          (cg
+            (if (not (member (car cg) (mapcar 'car colgs)))
+              (setq colgs (cons cg colgs))))
+          (t
+            (setq g (ew:group-of-ent e akdGroups))
+            (cond
+              (g (setq info (ew:info-from-group g)))
+              (t
+                (setq info (cw:read-xd e))
+                (if (and (null info) (= n 1))
+                  (setq info (cw:nearest-tagged (cw:get-pk-of e))))))
+            (if info
+              (progn
+                (setq gn (_extract-gname (cadr info)))
+                (if (and gn (not (member gn seen)))
+                  (setq seen (cons gn seen)
+                        infos (cons info infos)))))))
         (setq i (1+ i)))
       (cond
-        ((null infos) (princ "\nNo AKD doors/windows in selection."))
+        ((and (null infos) (null colgs))
+          (princ "\nNo AKD doors/windows/columns in selection."))
         (t
           (setq cmde (getvar "CMDECHO"))
           (setvar "CMDECHO" 0)
           (command-s "_.UNDO" "_BE")
-          (setq count 0)
+          (setq count 0 colcount 0)
+          (foreach cg colgs
+            (col:erase-group cg)
+            (setq colcount (1+ colcount)))
           (foreach info infos
             (ew:do-one info)
             (setq count (1+ count)))
           (command-s "_.UNDO" "_E")
           (setvar "CMDECHO" cmde)
-          (princ (strcat "\n" (itoa count) " removed."))))))
+          (princ (strcat "\n" (itoa count) " door/win, "
+                         (itoa colcount) " column(s) removed."))))))
   (princ))
 
 ;; ===================================================================
@@ -2376,7 +2736,228 @@
       (princ "\nHole repaired.")))
   (princ))
 
-(princ (strcat "\nAKDDoorWin loaded. AD/AW/ACW=hole+door/win/curtain, ADD/AWW/ACWW=2-click, AXW/HHX=corner win/hole, CW=resize, EW=erase+repair. ["
+;; ===================================================================
+;; DDW — thicken a line drawing into door/window frames + mullions
+;; ===================================================================
+;; Pick outer closed polyline + interior mullion lines.
+;;   - Outer polyline offsets INWARD by fw (frame band).
+;;   - Interior lines are replaced by TWO offset lines fw/2 each side of
+;;     centerline, extended to the inner boundary (clean butt joint).
+;; ponytail: mullion-mullion crossings are NOT auto-filleted. If two
+;; mullions cross, run FILLET R=0 manually on the four offset pairs.
+
+(defun ddw:perp (p1 p2 d / dx dy L)
+  (setq dx (- (car p2) (car p1))
+        dy (- (cadr p2) (cadr p1))
+        L  (sqrt (+ (* dx dx) (* dy dy))))
+  (if (> L 1e-9)
+    (list (* (- dy) (/ d L)) (* dx (/ d L)) 0.0)
+    '(0.0 0.0 0.0)))
+
+(defun ddw:add (a b) (list (+ (car a) (car b)) (+ (cadr a) (cadr b)) 0.0))
+(defun ddw:sub (a b) (list (- (car a) (car b)) (- (cadr a) (cadr b)) 0.0))
+
+(defun c:DDW ( / bnd inPt fw ss n i e d p1 p2 v lay innerB cmde os offA offB)
+  (initget 6)
+  (setq fw (getdist (strcat "\nFrame width <" (rtos *cfg-win-fw* 2 2) ">: ")))
+  (if (null fw) (setq fw *cfg-win-fw*))
+  (princ "\nSelect outer boundary (closed polyline): ")
+  (setq bnd (car (entsel)))
+  (cond
+    ((or (null bnd)
+         (/= (cdr (assoc 0 (entget bnd))) "LWPOLYLINE"))
+      (princ "\nNeed a closed LWPOLYLINE."))
+    (t
+      (setq inPt (getpoint "\nPick a point INSIDE the boundary (offset direction): "))
+      (princ "\nSelect interior mullion lines (Enter for none): ")
+      (setq ss (ssget '((0 . "LINE"))))
+      (setq cmde (getvar "CMDECHO") os (getvar "OSMODE"))
+      (setvar "CMDECHO" 0) (setvar "OSMODE" 0)
+      (command-s "_.UNDO" "_BE")
+      (command-s "_.OFFSET" fw bnd inPt "")
+      (setq innerB (entlast))
+      (if ss
+        (progn
+          (setq n (sslength ss) i 0)
+          (while (< i n)
+            (setq e   (ssname ss i)
+                  d   (entget e)
+                  p1  (cdr (assoc 10 d))
+                  p2  (cdr (assoc 11 d))
+                  lay (cdr (assoc 8 d))
+                  v   (ddw:perp p1 p2 (/ fw 2.0)))
+            (_mkline (ddw:add p1 v) (ddw:add p2 v) (cons lay 256))
+            (setq offA (entlast))
+            (_mkline (ddw:sub p1 v) (ddw:sub p2 v) (cons lay 256))
+            (setq offB (entlast))
+            ;; extend both ends of both offset lines to innerB
+            (command-s "_.EXTEND" innerB "" p1 p2 offA offB "")
+            (entdel e)
+            (setq i (1+ i)))))
+      (command-s "_.UNDO" "_E")
+      (setvar "OSMODE" os) (setvar "CMDECHO" cmde)
+      (princ "\nDDW done.")))
+  (princ))
+
+;; ===================================================================
+;; SET — interactive customization of *cfg-* globals
+;; ===================================================================
+(setq *cfg-set-cats*
+  '(("Window" (("Fw" *cfg-win-fw* R) ("Fd" *cfg-win-fd* R) ("Wall" *cfg-win-wall-off* R)))
+    ("Door"   (("Fw" *cfg-door-fw* R) ("Fd" *cfg-door-fd* R) ("Panel" *cfg-door-panel-t* R)))
+    ("Slide"  (("Fw" *cfg-slide-fw* R) ("Panel" *cfg-slide-p* R) ("Ext" *cfg-slide-ext* R) ("Wall" *cfg-slide-wall-off* R)))
+    ("Pocket" (("Opening" *cfg-pd-opening* R) ("Jamb" *cfg-pd-jamb* R) ("Jambh" *cfg-pd-jamb-h* R)
+               ("Grey" *cfg-pd-grey-t* R) ("Leaf" *cfg-pd-leaf-t* R) ("Stud" *cfg-pd-stud-t* R)
+               ("Gyp" *cfg-pd-gyp-t* R) ("Studw" *cfg-pd-stud-w* R) ("Lip" *cfg-pd-lipext* R)
+               ("Groove" *cfg-pd-groove* R)))
+    ("Label"  (("Hex" *cfg-lbl-hex-r* R) ("Cir" *cfg-lbl-cir-r* R) ("Height" *cfg-lbl-h* R)
+               ("Offwin" *cfg-lbl-off-win* R) ("Offdoor" *cfg-lbl-off-door* R)))
+    ("Table"  (("Titleh" *cfg-tbl-titleH* R) ("Hdrh" *cfg-tbl-hdrH* R) ("Rowh" *cfg-tbl-rowH* R)
+               ("Txth" *cfg-tbl-txtH* R) ("Titletxth" *cfg-tbl-titleTxtH* R)))
+    ("Layer"  (("Winframe" *cfg-win-frame* L) ("Winglass" *cfg-win-glass* L) ("Winwall" *cfg-win-wall* L)
+               ("Doorframe" *cfg-door-frame* L) ("Doorpanel" *cfg-door-panel* L) ("Doorarc" *cfg-door-arc* L)
+               ("Doorwall" *cfg-door-wall* L) ("Lblshape" *cfg-lbl-shape* L) ("Lbltext" *cfg-lbl-text* L)
+               ("Dimtext" *cfg-dim-text* L) ("Pdgrey" *cfg-pd-grey* L)))))
+
+(defun set:joinkw (lst / s)
+  (setq s "")
+  (foreach e lst (setq s (strcat s (if (= s "") "" " ") (car e))))
+  s)
+
+(defun set:cli (/ catkws cat items itemkws var entry sym typ cur newv newL newC)
+  (setq catkws (set:joinkw *cfg-set-cats*))
+  (initget catkws)
+  (setq cat (getkword (strcat "\nCategory [" catkws "]: ")))
+  (if cat
+    (progn
+      (setq items (cadr (assoc cat *cfg-set-cats*))
+            itemkws (set:joinkw items))
+      (initget itemkws)
+      (setq var (getkword (strcat "\n" cat " [" itemkws "]: ")))
+      (if var
+        (progn
+          (setq entry (assoc var items) sym (cadr entry) typ (caddr entry) cur (eval sym))
+          (cond
+            ((= typ 'R)
+             (setq newv (getreal (strcat "\n" var " [" (rtos cur 2 2) "]: ")))
+             (if newv (progn (set sym newv)
+                             (princ (strcat "\n" (vl-symbol-name sym) " = " (rtos newv 2 2))))))
+            ((= typ 'L)
+             (setq newL (getstring T (strcat "\n" var " layer [" (car cur) "]: ")))
+             (if (= newL "") (setq newL (car cur)))
+             (setq newC (getint (strcat "\n" var " color [" (itoa (cdr cur)) "]: ")))
+             (if (null newC) (setq newC (cdr cur)))
+             (set sym (cons newL newC))
+             (princ (strcat "\n" (vl-symbol-name sym) " = \"" newL "\" color " (itoa newC)))))))))
+  (princ))
+
+;; -------- DCL pop-up version --------
+(setq *set:dlg-cat* nil *set:dlg-var* nil)
+
+(defun set:dlg-cur ( / items entry sym typ cur)
+  (setq items (cadr (assoc *set:dlg-cat* *cfg-set-cats*))
+        entry (assoc *set:dlg-var* items)
+        sym   (cadr entry) typ (caddr entry) cur (eval sym))
+  (cond
+    ((= typ 'R)
+      (set_tile "cur" (rtos cur 2 2))
+      (set_tile "val" (rtos cur 2 2))
+      (set_tile "lyr" "") (set_tile "clr" "")
+      (mode_tile "val" 0) (mode_tile "lyr" 1) (mode_tile "clr" 1)
+      (mode_tile "val" 2))
+    ((= typ 'L)
+      (set_tile "cur" (strcat (car cur) " / " (itoa (cdr cur))))
+      (set_tile "val" "")
+      (set_tile "lyr" (car cur)) (set_tile "clr" (itoa (cdr cur)))
+      (mode_tile "val" 1) (mode_tile "lyr" 0) (mode_tile "clr" 0)
+      (mode_tile "lyr" 2))))
+
+(defun set:dlg-fill-vars ( / items)
+  (setq items (cadr (assoc *set:dlg-cat* *cfg-set-cats*)))
+  (start_list "var") (foreach it items (add_list (car it))) (end_list)
+  (setq *set:dlg-var* (car (car items)))
+  (set_tile "var" "0")
+  (set:dlg-cur))
+
+(defun set:dlg-cat-changed (idx)
+  (setq *set:dlg-cat* (car (nth (atoi idx) *cfg-set-cats*)))
+  (set:dlg-fill-vars))
+
+(defun set:dlg-var-changed (idx / items)
+  (setq items (cadr (assoc *set:dlg-cat* *cfg-set-cats*)))
+  (setq *set:dlg-var* (car (nth (atoi idx) items)))
+  (set:dlg-cur))
+
+(defun set:dlg-apply ( / items entry sym typ vs lyr clr)
+  (setq items (cadr (assoc *set:dlg-cat* *cfg-set-cats*))
+        entry (assoc *set:dlg-var* items)
+        sym (cadr entry) typ (caddr entry))
+  (cond
+    ((= typ 'R)
+      (setq vs (get_tile "val"))
+      (if (and vs (/= vs "") (distof vs))
+        (progn (set sym (distof vs))
+               (princ (strcat "\n" (vl-symbol-name sym) " = " (rtos (distof vs) 2 2))))))
+    ((= typ 'L)
+      (setq lyr (get_tile "lyr") clr (get_tile "clr"))
+      (if (and lyr (/= lyr "") clr (/= clr ""))
+        (progn (set sym (cons lyr (atoi clr)))
+               (princ (strcat "\n" (vl-symbol-name sym) " = \"" lyr "\" color " clr)))))))
+
+(defun set:write-dcl ( / p f)
+  (setq p (vl-filename-mktemp "akdset" nil ".dcl") f (open p "w"))
+  (foreach ln
+    '("akd_set : dialog { label = \"AKDDoorWin Settings\"; spacer;"
+      " : row {"
+      "  : boxed_column { label = \"Category\";"
+      "     : list_box { key = \"cat\"; width = 16; height = 14; } }"
+      "  : boxed_column { label = \"Setting\";"
+      "     : list_box { key = \"var\"; width = 18; height = 14; } }"
+      "  : boxed_column { label = \"Value\";"
+      "     : text { label = \"Current:\"; }"
+      "     : text { key = \"cur\"; width = 22; } spacer;"
+      "     : edit_box { label = \"New value:\"; key = \"val\"; width = 18; } spacer;"
+      "     : text { label = \"For Layer settings:\"; }"
+      "     : edit_box { label = \"Layer name:\"; key = \"lyr\"; width = 18; }"
+      "     : edit_box { label = \"Color (1-256):\"; key = \"clr\"; width = 18; } }"
+      " }"
+      " spacer; ok_cancel; }")
+    (write-line ln f))
+  (close f)
+  p)
+
+(defun c:SET ( / dcl_id ok dclfile)
+  (setq dclfile (findfile "AKDDoorWin.dcl"))
+  (if (null dclfile) (setq dclfile (set:write-dcl)))
+  (cond
+    ((null dclfile) (set:cli))
+    (t
+      (setq dcl_id (load_dialog dclfile))
+      (cond
+        ((or (not dcl_id) (< dcl_id 0)) (set:cli))
+        ((not (new_dialog "akd_set" dcl_id))
+          (unload_dialog dcl_id) (set:cli))
+        (t
+          (start_list "cat")
+          (foreach c *cfg-set-cats* (add_list (car c)))
+          (end_list)
+          (setq *set:dlg-cat* (car (car *cfg-set-cats*)))
+          (set_tile "cat" "0")
+          (set:dlg-fill-vars)
+          (action_tile "cat" "(set:dlg-cat-changed $value)")
+          (action_tile "var" "(set:dlg-var-changed $value)")
+          (action_tile "accept" "(set:dlg-apply) (done_dialog 1)")
+          (action_tile "cancel" "(done_dialog 0)")
+          (setq ok (start_dialog))
+          (unload_dialog dcl_id)))))
+  (princ))
+
+;; Optional per-user overrides: place AKDDoorWin.cfg alongside the .lsp
+;; with (setq *cfg-...* ...) lines. Loaded last so it wins over defaults.
+(if (findfile "AKDDoorWin.cfg")
+    (load (findfile "AKDDoorWin.cfg")))
+
+(princ (strcat "\nAKDDoorWin loaded. AD/AW/ACW=hole+door/win/curtain, ADD/AWW/ACWW=2-click, AXW/HHX=corner win/hole, CW=resize, EW=erase+repair, SET=settings. ["
                (hole:getm) " W=" (rtos (hole:getw) 2 2)
                " G=" (rtos (hole:getg) 2 2) "]"))
 (princ)
