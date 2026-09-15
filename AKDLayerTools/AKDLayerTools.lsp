@@ -138,7 +138,60 @@
 ; ER1 - Set Current Layer (preset list) + re-fire last draw cmd
 ; ============================================================
 
-(defun c:ER1 (/ fn f dcl_id idx selected lastcmd)
+;; Persist *ER1_Layers* additions to a sidecar in $HOME so they survive reload.
+(defun akd:er1-store ( ) (strcat (getenv "HOME") "/.akd_er1_layers"))
+
+(defun akd:er1-load ( / p fp ln)
+  (setq p (akd:er1-store))
+  (if (findfile p)
+    (progn
+      (setq fp (open p "r"))
+      (while (setq ln (read-line fp))
+        (setq ln (vl-string-trim " \t\r\n" ln))
+        (if (and (/= ln "") (not (member ln *ER1_Layers*)))
+          (setq *ER1_Layers* (append *ER1_Layers* (list ln)))))
+      (close fp))))
+
+(defun akd:er1-save ( / fp)
+  (setq fp (open (akd:er1-store) "w"))
+  (foreach l *ER1_Layers* (write-line l fp))
+  (close fp))
+
+;; Sub-dialog: pick drawing layers not already in the preset (multi-select).
+(defun akd:er1-add ( / avail fn f dcl_id sel res raw s)
+  (setq avail (vl-remove-if '(lambda (n) (member n *ER1_Layers*))
+                            (acad_strlsort (akd:all-layers))))
+  (cond
+    ((null avail) (alert "All drawing layers already in preset.") nil)
+    (T
+     (setq fn (vl-filename-mktemp "er1add.dcl"))
+     (setq f (open fn "w"))
+     (write-line "er1add : dialog { label = \"Add Layers to Preset\";" f)
+     (write-line " : list_box { key = \"lst\"; width = 30; height = 15; multiple_select = true; }" f)
+     (write-line " spacer; ok_cancel; }" f)
+     (close f)
+     (setq dcl_id (load_dialog fn))
+     (if (not (new_dialog "er1add" dcl_id))
+       (progn (vl-file-delete fn) nil)
+       (progn
+         (start_list "lst") (mapcar 'add_list avail) (end_list)
+         (action_tile "lst"    "(setq raw $value)")
+         (action_tile "accept" "(done_dialog 1)")
+         (action_tile "cancel" "(done_dialog 0)")
+         (setq res (start_dialog))
+         (unload_dialog dcl_id)
+         (vl-file-delete fn)
+         (if (and (= res 1) raw)
+           (progn
+             (foreach s (akd:split raw " ")
+               (if (/= s "")
+                 (setq sel (cons (nth (atoi s) avail) sel))))
+             sel)))))))
+
+(defun c:ER1 (/ fn f dcl_id idx selected lastcmd added res)
+
+  (if (null *er1:sidecar-loaded*)
+    (progn (akd:er1-load) (setq *er1:sidecar-loaded* T)))
 
   (if (not *ER1_Layers*)
     (progn (alert "No layers defined in *ER1_Layers*.") (exit)))
@@ -147,6 +200,7 @@
   (setq f (open fn "w"))
   (write-line "er1_dialog : dialog { label = \"Set Current Layer\";" f)
   (write-line " : list_box { key = \"lst\"; width = 30; height = 15; allow_accept = true; }" f)
+  (write-line " : button { key = \"add\"; label = \"Add layer...\"; }" f)
   (write-line " spacer; ok_cancel; }" f)
   (close f)
 
@@ -163,14 +217,27 @@
                        (length (member *er1:last-layer* *ER1_Layers*))))))
 
   (action_tile "lst"    "(setq idx $value)(if (= $reason 4) (done_dialog 1))")
+  (action_tile "add"    "(done_dialog 2)")
   (action_tile "accept" "(done_dialog 1)")
   (action_tile "cancel" "(done_dialog 0)")
 
   (set_tile "lst" idx)
   (mode_tile "lst" 2)
 
-  (if (= (start_dialog) 1)
-    (setq selected (nth (atoi idx) *ER1_Layers*)))
+  (setq res (start_dialog))
+  (cond
+    ((= res 1) (setq selected (nth (atoi idx) *ER1_Layers*)))
+    ((= res 2)
+     (unload_dialog dcl_id) (vl-file-delete fn)
+     (if (setq added (akd:er1-add))
+       (progn
+         (foreach l added
+           (if (not (member l *ER1_Layers*))
+             (setq *ER1_Layers* (append *ER1_Layers* (list l)))))
+         (akd:er1-save)
+         (princ (strcat "\nAdded " (itoa (length added)) " layer(s)."))))
+     (c:ER1)
+     (exit)))
 
   (unload_dialog dcl_id)
   (vl-file-delete fn)
