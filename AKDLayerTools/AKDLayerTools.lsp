@@ -11,6 +11,7 @@
 ;   ERAF  Turn Off All But Current
 ;   ERL   Lock Layer (pick)     (pick object → lock its layer; repeats)
 ;   ERU   Unlock Layer (pick)   (pick object → unlock its layer; repeats)
+;   ERB   Reset to ByLayer      (color/ltype/lw/ltscale/transparency → ByLayer, layer→0)
 ;   ERSC  Show all shortcuts
 ; Self-contained: no .dcl or config files needed.
 ; ============================================================
@@ -897,6 +898,42 @@
   (princ))
 
 ; ============================================================
+; ERB - Reset picked objects to ByLayer defaults:
+;       layer=0, color/ltype/lw/transparency=ByLayer, ltscale=1.
+;       Accepts preselection. One undo.
+; ============================================================
+
+(defun akd:bylayer-one (ent / e)
+  (setq e (entget ent))
+  (setq e (akd:dxf-put e   8 "0"))
+  (setq e (akd:dxf-put e  62 256))
+  (setq e (akd:dxf-put e   6 "ByLayer"))
+  (setq e (akd:dxf-put e 370 -1))
+  (setq e (akd:dxf-put e  48 1.0))
+  (setq e (akd:dxf-put e 440 0))
+  (entmod e))
+
+(defun c:ERB (/ ss i)
+  (if (not (setq ss (akd:presel)))
+    (progn
+      (prompt "\nSelect objects to reset to ByLayer. Enter when done.")
+      (setq ss (ssget))))
+  (if ss
+    (progn
+      (akd:undo-begin)
+      (setq i 0)
+      (repeat (sslength ss)
+        (akd:bylayer-one (ssname ss i))
+        (setq i (1+ i)))
+      (command-s "_.REGEN")
+      (sssetfirst nil nil)
+      (akd:undo-end)
+      (princ (strcat "\nReset " (itoa (sslength ss)) " object(s) to ByLayer.")))
+    (princ "\nNothing selected."))
+  (princ)
+)
+
+; ============================================================
 ; ERSC - Show shortcuts
 ; ============================================================
 
@@ -912,6 +949,7 @@
   (prompt "\n ERAF  Turn OFF all layers except current")
   (prompt "\n ERL   Lock picked object's layer (loop)")
   (prompt "\n ERU   Unlock picked object's layer (loop)")
+  (prompt "\n ERB   Reset picked objects to ByLayer (layer 0)")
   (prompt "\n EREX  Export layer list + groups (TXT or JSON)")
   (prompt "\n ERIM  Import layers from a TXT export")
   (prompt "\n ERSC  Show this list")
