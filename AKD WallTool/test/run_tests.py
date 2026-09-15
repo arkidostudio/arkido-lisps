@@ -235,8 +235,11 @@ def recon_case(walls):
         owned = sum(1 for sa, sb in segs if A.ev(f'(wt:owned-line-p (list nil {P(*sa)} {P(*sb)}) (list nil {P(*a)} {P(*b)} {float(th)} "{pos}"))'))
         got.append((r and (round(r[3], 3), r[4]), owned))
     return segs, got
-segs, got = recon_case([wall(O, (3000, 0), 200, 'LEFT'), wall((3000, 0), (3000, 2500), 150), wall((0, -3000), (0, 3000), 100, 'RIGHT')])
-chk('recon: thickness/position recovered (LEFT, CENTER, RIGHT)', [g[0] for g in got] == [(200, 'LEFT'), (150, 'CENTER'), (100, 'RIGHT')])
+segs, got = recon_case([wall(O, (3000, 0), 200), wall((3000, 0), (3000, 2500), 150), wall((0, -3000), (0, 3000), 100)])
+chk('recon: centered masters -> thickness recovered as CENTER', [g[0] for g in got] == [(200, 'CENTER'), (150, 'CENTER'), (100, 'CENTER')])
+segs = solve([wall(O, (3000, 0), 200, 'LEFT')])
+faces = '(list ' + ' '.join(f'(list nil {P(*a)} {P(*b)})' for a, b in segs) + ')'
+chk('recon: legacy off-centre master (on a face) is NOT recognised (WR migrates it)', A.ev(f'(wt:recon (list 0 {P(0,0)} {P(3000,0)}) {faces})') is None)
 chk('recon: plain AX line (no faces) is not a wall', A.ev(f'(wt:recon (list 0 {P(0,5000)} {P(3000,5000)}) (list))') is None)
 _, got = recon_case([wall(O, (3000, 0))])
 chk('owned lines: free wall claims all 4 lines', got[0][1] == 4)
@@ -469,14 +472,15 @@ chk('XW Undo restores original source LINEs (layer 0, unsplit, no walls)',
     split_ok and not masters_now() and not walls_now() and all(e not in A.DELETED and A.DB[e] == src_before[e] for e in ids))
 
 # 12. reload: registry cleared, split masters still reconstructed and EW works
-build([wall((0,0),(10000,0),200,'LEFT')]); settings(150, 'CENTER'); add(((5000,0),(5000,4000)))
+build([wall((0,0),(10000,0),200,'LEFT')]); settings(150, 'CENTER'); add(((5000,100),(5000,4000)))   # LEFT 200 -> centerline y=100
 A.ev('(setq *wt:reg* nil)')
-net_ok = all(A.ev(f'(wt:recon (list nil {P(*a)} {P(*b)}) (cadr (wt:net-scan)))') for a, b in [((0,0),(5000,0)), ((5000,0),(10000,0))])
-rec_l = A.ev(f'(wt:recon (list nil {P(0,0)} {P(5000,0)}) (cadr (wt:net-scan)))')
-ew_span((5000,0),(10000,0), via='face', off=200.0)
-chk('reload: split spans reconstruct with inherited 200/LEFT; EW right arm leaves 「',
-    net_ok and rec_l and round(rec_l[3]) == 200 and rec_l[4] == 'LEFT'
-    and master_set() == sorted([mk((0,0),(5000,0)), mk((5000,0),(5000,4000))])
+net_ok = all(A.ev(f'(wt:recon (list nil {P(*a)} {P(*b)}) (cadr (wt:net-scan)))') for a, b in [((0,100),(5000,100)), ((5000,100),(10000,100))])
+rec_l = A.ev(f'(wt:recon (list nil {P(0,100)} {P(5000,100)}) (cadr (wt:net-scan)))')
+ew_span((5000,100),(10000,100), via='face', off=100.0)
+chk('reload: centered split spans reconstruct as 200 CENTER; EW right arm leaves 「, same physical wall as old LEFT model',
+    net_ok and rec_l and round(rec_l[3]) == 200 and rec_l[4] == 'CENTER'
+    and master_set() == sorted([mk((0,100),(5000,100)), mk((5000,100),(5000,4000))])
+    and same_lines(walls_now(), expected([wall((0,100),(5000,100),200), wall((5000,100),(5000,4000))]))
     and same_lines(walls_now(), expected([wall((0,0),(5000,0),200,'LEFT'), wall((5000,0),(5000,4000))])))
 
 # pick near the junction on the branch face, but AutoCAD handed us the through wall's face entity
@@ -553,11 +557,11 @@ chk('XW PickFirst mixed: 3 axes converted, 2 unsupported ignored and unchanged',
 fresh()
 settings(150, 'RIGHT'); add(((3000,0),(-3000,0)))
 settings(150, 'CENTER'); add(((0,9000),(3000,9000)))          # isolated; its right cap lies on x=3000 like wall 1's start
-settings(200, 'CENTER'); add(((0,0),(0,-3000)))                # T into wall 1 -> wall 1 regenerated
-ws = [wall((3000,0),(-3000,0),150,'RIGHT'), wall((0,9000),(3000,9000)), wall((0,0),(0,-3000),200)]
+settings(200, 'CENTER'); add(((0,75),(0,-3000)))               # T into wall 1 (centerline y=75) -> wall 1 regenerated
+ws = [wall((3000,0),(-3000,0),150,'RIGHT'), wall((0,9000),(3000,9000)), wall((0,0),(0,-3000),200)]   # old eccentric model, same physical walls
 chk('ownership: rebuilding a wall never erases an aligned cap of an unrelated wall', same_lines(walls_now(), expected(ws)))
-ew(find_line('X-AXIS', (3000,0), (0,0)), find_line('X-AXIS', (0,0), (-3000,0)))   # T split it into two spans
-chk('ownership: EW on that wall leaves the unrelated wall intact', same_lines(walls_now(), expected([ws[1], ws[2]])) and len(masters_now()) == 2)
+ew(find_line('X-AXIS', (3000,75), (0,75)), find_line('X-AXIS', (0,75), (-3000,75)))   # T split it into two spans
+chk('ownership: EW on that wall leaves the unrelated wall intact', same_lines(walls_now(), expected([ws[1], wall((0,75),(0,-3000),200)])) and len(masters_now()) == 2)
 
 # =========================== WWF (was WWO) ===========================
 def face_pick(w, side, t_frac=0.5):
@@ -815,6 +819,76 @@ c = cfg_run('TW_CONNECT_DISTANCE=-3\n'); badv = c('TW_CONNECT_DISTANCE') == 150.
 c = cfg_run('TW_CONNECT_DISTANCE=400\n'); goodv = c('TW_CONNECT_DISTANCE') == 400.0
 cfg_run(None)
 chk('config: TW_CONNECT_DISTANCE optional, invalid -> 150', badv and goodv)
+
+# =========================== Centerline masters (Phase 1) ===========================
+def master_offsets_ok(tol=1e-6):
+    """every master lies exactly halfway between the two faces of its wall"""
+    for e, a, b in masters_now():
+        r = A.ev(f'(wt:recon (list nil {P(*a)} {P(*b)}) (cadr (wt:net-scan)))')
+        if not r or r[4] != 'CENTER': return False
+    return True
+pl = lambda a, b, th, pos: [tuple(x) for x in A.ev(f'(wt:placement-to-centerline {P(*a)} {P(*b)} {float(th)} "{pos}")')]
+chk('placement-to-centerline: CENTER on line, LEFT +th/2 left of travel, RIGHT mirror, reversed direction flips side',
+    pl((0,0),(4000,0),200,'CENTER') == [(0,0),(4000,0)] and pl((0,0),(4000,0),200,'LEFT') == [(0,100),(4000,100)]
+    and pl((0,0),(4000,0),200,'RIGHT') == [(0,-100),(4000,-100)] and pl((4000,0),(0,0),200,'LEFT') == [(4000,-100),(0,-100)])
+ok = True
+for pos in ('CENTER', 'LEFT', 'RIGHT'):
+    for ang in (0, 45, 73, 135):
+        a, b = (0.0, 0.0), polar((0.0, 0.0), ang, 4000)
+        fresh(200, pos); add((a, b))
+        ok = ok and len(masters_now()) == 1 and master_offsets_ok() and same_lines(walls_now(), expected([wall(a, b, 200, pos)]))
+chk('WW 200 CENTER/LEFT/RIGHT at 0/45/73/135: same physical wall as before, master exactly on centerline', ok)
+ok = True
+for pos in ('LEFT', 'RIGHT'):
+    fresh(200, pos); A.ev('(setq *wt:chain-on* t *wt:chain* nil)')
+    add(((0,0),(4000,0))); add(((4000,0),(4000,3000))); add(((4000,3000),(1000,5000)))
+    A.ev('(setq *wt:chain-on* nil *wt:chain* nil)')
+    old = [wall((0,0),(4000,0),200,pos), wall((4000,0),(4000,3000),200,pos), wall((4000,3000),(1000,5000),200,pos)]
+    ok = ok and master_offsets_ok() and normalized_ok() and same_lines(walls_now(), expected(old)) and len(masters_now()) == 3
+chk('WW LEFT/RIGHT chain (90 deg + oblique corner): centerline corners meet, physical walls identical to old model', ok)
+fresh(150, 'CENTER'); add(((-3000,0),(3000,0))); settings(200, 'LEFT'); add(((0,-3000),(0,0)))
+chk('WW LEFT branch into a centered wall: T with physical faces identical to old model',
+    same_lines(walls_now(), expected([wall((-3000,0),(3000,0),150), wall((0,-3000),(0,0),200,'LEFT')])) and master_offsets_ok() and normalized_ok())
+fresh(200, 'CENTER'); add(((0,0),(4000,0))); settings(200, 'LEFT'); add(((4000,0),(4000,3000)))
+chk('WW LEFT wall added at the free end of an existing wall: existing end follows the centerline corner (clean L)',
+    same_lines(walls_now(), expected([wall((0,0),(4000,0),200), wall((4000,0),(4000,3000),200,'LEFT')])) and master_offsets_ok())
+fresh(200, 'CENTER'); add(((0,0),(4000,0))); before = geo()
+e = find_line('X-AXIS', (0,0), (4000,0)); set_end(e, 0, (4000,0)); set_end(e, 1, (0,0))
+A.ev('(setq *wt:reg* nil)'); tw(field(-500,-500,4500,500))
+chk('centered wall: reversing the master direction and rebuilding gives identical A-WALL', geo()[0] == before[0])
+ok = True
+for pos, inside in (('CENTER', None), ('LEFT', True), ('RIGHT', False)):
+    fresh(200, pos)
+    add(((0,0),(4000,0)), ((4000,0),(4000,3000)), ((4000,3000),(0,3000)), ((0,3000),(0,0)))
+    old = [wall(a, b, 200, pos) for a, b in (((0,0),(4000,0)), ((4000,0),(4000,3000)), ((4000,3000),(0,3000)), ((0,3000),(0,0)))]
+    inset = {'CENTER': 0, 'LEFT': 100, 'RIGHT': -100}[pos]
+    want = sorted([mk((inset,inset),(4000-inset,inset)), mk((4000-inset,inset),(4000-inset,3000-inset)), mk((4000-inset,3000-inset),(inset,3000-inset)), mk((inset,3000-inset),(inset,inset))])
+    ok = ok and same_lines(walls_now(), expected(old)) and master_set() == want and len(walls_now()) == 8
+chk('Rectangle CENTER/LEFT/RIGHT: same physical rectangle as before, four centerline masters meeting at corners', ok)
+ok = True
+for pos in ('CENTER', 'LEFT', 'RIGHT'):
+    fresh(); ids = [mkline((0,0),(10000,0),'0'), mkline((5000,0),(5000,4000),'0')]
+    src = {e: list(A.DB[e]) for e in ids}
+    A.ev('(wt:pend-begin)'); settings(200, pos)
+    A.G[A.Sym('*T-NEW*')] = None
+    xw(ids, 200, pos)
+    old = [wall((0,0),(10000,0),200,pos), wall((5000,0),(5000,4000),200,pos)]
+    ok = ok and master_offsets_ok() and normalized_ok() and same_lines(walls_now(), expected(old))
+chk('XW 200 CENTER/LEFT/RIGHT: placement follows alignment, masters are centerlines, T normalized', ok)
+fresh(); ids = [mkline((0,0),(10000,0),'0'), mkline((5000,0),(5000,4000),'0')]
+src = {e: list(A.DB[e]) for e in ids}
+settings(200, 'LEFT')
+A.G[A.Sym('*T-SEL*')] = ids
+A.ev('(progn (defun wt:t-xw-keep (sel / r) (wt:xw-convert sel)) (setq *t-x* nil))')
+# run the conversion inside a kept transaction: wrap wt:pend-begin so the record survives
+A.ev('(progn (setq *t-orig-begin* wt:pend-begin) (defun wt:pend-begin () (setq *wt:pending* (list nil nil nil) *t-keep* nil)))')
+A.ev('(progn (setq *t-orig-rebuild* wt:rebuild) (defun wt:rebuild (new removed) (setq *t-keep* nil) (apply *t-orig-rebuild* (list new removed)) (setq *t-keep* *wt:pending*) new))')
+A.ev('(wt:xw-convert *t-sel*)')
+A.ev('(progn (setq wt:pend-begin *t-orig-begin*) (setq wt:rebuild *t-orig-rebuild*))')
+converted = len(masters_now()) == 3
+A.ev('(wt:seg-undo *t-keep*)')
+chk('XW LEFT Undo restores the original source LINEs exactly (layer 0, drawn geometry, no walls)',
+    converted and not masters_now() and not walls_now() and all(e not in A.DELETED and A.DB[e] == src[e] for e in ids))
 
 # Position submenu keys (shared by WW and XW)
 res = []
