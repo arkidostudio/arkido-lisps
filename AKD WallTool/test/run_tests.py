@@ -985,6 +985,32 @@ repaired = master_set() == sorted([mk((0,0),(5000,0)), mk((5000,0),(10000,0)), m
 undo_rec(rec)
 chk('WR combined (misaligned + missing + damaged face + unsplit T): all repaired; Undo restores exact original',
     repaired and geo() == base and all(e not in A.DELETED and A.DB[e] == d for e, d in ents.items()))
+# WR joins broken collinear pieces of one wall (no junction at the joint)
+fresh(200, 'CENTER'); add(((0,0),(10000,0))); phys = geo()[0]
+A.entdel(find_line('X-AXIS', (0,0), (10000,0)))
+for a, b in (((0,0),(3000,0)), ((3000,0),(6000,0)), ((6000,0),(10000,0))): mkline(a, b, 'X-AXIS')
+A.ev('(setq *wt:reg* nil)')
+msg, rec = say(lambda: wr(field(-500,-500,10500,500)))
+chk('WR joins a wall broken into 3 touching masters into one span, walls unchanged, reported',
+    master_set() == [mk((0,0),(10000,0))] and geo()[0] == phys and '2 broken axis segment(s) joined' in msg)
+fresh(200, 'CENTER'); add(((0,0),(10000,0))); phys = geo()[0]
+A.entdel(find_line('X-AXIS', (0,0), (10000,0))); mkline((0,0),(6000,0),'X-AXIS'); mkline((4000,0),(10000,0),'X-AXIS')
+A.ev('(setq *wt:reg* nil)'); base = geo(); rec = wr(field(-500,-500,10500,500))
+joined_ok = master_set() == [mk((0,0),(10000,0))] and geo()[0] == phys
+undo_rec(rec)
+chk('WR joins overlapping collinear masters; Undo restores both pieces', joined_ok and geo() == base)
+build([wall((0,0),(10000,0))]); add(((5000,0),(5000,4000))); before = geo()
+wr(field(-500,-500,10500,4500))
+chk('WR keeps spans split at a real T junction (no join)', geo() == before)
+fresh(150, 'CENTER'); add(((0,0),(5000,0))); settings(250, 'CENTER'); add(((5000,0),(10000,0))); before = geo()
+wr(field(-500,-500,10500,500))
+chk('WR does not join collinear pieces of different thickness', geo() == before)
+fresh(200, 'CENTER'); add(((0,0),(10000,0)))
+A.entdel(find_line('X-AXIS', (0,0), (10000,0))); mkline((0,0),(5000,0),'X-AXIS'); mkline((5000,0),(10000,0),'X-AXIS')
+A.ev('(setq *wt:reg* nil)'); before = geo()
+wr(field(6000,-500,10500,500))
+chk('WR only joins when the joint is inside the window', geo() == before)
+
 A.POINTQ[:] = [[-500.0, -500.0, 0.0], [4500.0, 500.0, 0.0]]
 fresh(200, 'CENTER'); add(((0,0),(4000,0))); e = find_line('X-AXIS', (0,0), (4000,0)); set_end(e, 0, (0,60)); set_end(e, 1, (4000,60))
 A.ev('(c:WR)')

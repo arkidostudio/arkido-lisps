@@ -1670,10 +1670,36 @@
           (setq r t)))))
   r)
 
+;; masters of ms other than enames e1 e2 touching q
+(defun wt:wr-others-at (q e1 e2 ms / n)
+  (setq n 0)
+  (foreach m ms
+    (if (and (not (eq (car m) e1)) (not (eq (car m) e2)) (wt:on-seg q (cadr m) (caddr m)))
+      (setq n (1+ n))))
+  n)
+
+;; Broken pieces of one wall: collinear, same thickness, touching or overlapping,
+;; with no other master at the joint (a real junction keeps its spans).
+;; Returns the joined segment in a's direction, or nil.
+(defun wt:wr-join (a b ms field / u q ts)
+  (setq u (wt:w-u a))
+  (if (and (wt:par u (wt:w-u b))
+           (< (abs (wt:cross u (wt:v- (wt:w-p1 b) (wt:w-p1 a)))) *wt:tol*)
+           (< (abs (- (wt:w-thk a) (wt:w-thk b))) *wt:tol*))
+    (progn
+      (foreach p (list (wt:w-p1 b) (wt:w-p2 b))
+        (if (and (not q) (wt:on-seg p (wt:w-p1 a) (wt:w-p2 a))) (setq q p)))
+      (if (and q (wt:pip q field) (= (wt:wr-others-at q (car a) (car b) ms) 0))
+        (progn
+          (setq ts (mapcar '(lambda (p) (wt:dot (wt:v- p (wt:w-p1 a)) u))
+                           (list (wt:w-p1 a) (wt:w-p2 a) (wt:w-p1 b) (wt:w-p2 b))))
+          (list (wt:v+ (wt:w-p1 a) (wt:v* u (apply 'min ts)))
+                (wt:v+ (wt:w-p1 a) (wt:v* u (apply 'max ts)))))))))
+
 ;; Audit and repair wall masters in field. Returns the transaction record (or nil).
 (defun wt:wr-repair (field / net recs band reg adj amb ambs created walls i r w m p xs x nw k d
-                            pass more c seg en rec checked msg)
-  (setq net (wt:net-scan) adj 0 created 0)
+                            pass more c seg en rec checked msg joined pair keep a b)
+  (setq net (wt:net-scan) adj 0 created 0 joined 0)
   ;; 1. audit existing masters: faces decide the centerline and thickness
   (foreach m (car net)
     (if (wt:tw-seg-in-field (cadr m) (caddr m) field)
@@ -1745,7 +1771,29 @@
                  (wt:reg-add en (caddr c) "CENTER")
                  (setq walls (cons (list en (car seg) (cadr seg) (caddr c) "CENTER") walls)
                        created (1+ created) more t)))))))))
-  ;; 5. stale unclaimed A-WALL in the field beside the walls, then normalize + rebuild
+  ;; 5. join broken collinear pieces of the same wall
+  (setq more t)
+  (while more
+    (setq more nil pair nil net (wt:net-scan))
+    (foreach a walls
+      (foreach b walls
+        (if (and (not pair) (not (eq (car a) (car b))))
+          (if (setq seg (wt:wr-join a b (car net) field)) (setq pair (list a b seg))))))
+    (if pair
+      (progn
+        (setq a (car pair) b (cadr pair) seg (caddr pair)
+              d (entget (car a))
+              d (subst (cons 10 (wt:3d (car seg))) (assoc 10 d) d)
+              d (subst (cons 11 (wt:3d (cadr seg))) (assoc 11 d) d))
+        (wt:pend-modify d)
+        (wt:pend-erase (car b))
+        (setq keep nil)
+        (foreach w walls
+          (cond ((eq (car w) (car b)))
+                ((eq (car w) (car a)) (setq keep (cons (list (car a) (car seg) (cadr seg) (wt:w-thk a) "CENTER") keep)))
+                (t (setq keep (cons w keep)))))
+        (setq walls (reverse keep) joined (1+ joined) more t))))
+  ;; 6. stale unclaimed A-WALL in the field beside the walls, then normalize + rebuild
   (setq net (wt:net-scan))
   (foreach f (cadr net)
     (if (and (wt:tw-seg-in-field (cadr f) (caddr f) field)
@@ -1758,10 +1806,11 @@
   (setq rec *wt:pending* *wt:pending* nil
         checked (length walls) amb (length ambs))
   (setq msg (strcat "\nWR: " (itoa checked) " wall(s) checked."))
-  (if (and (= adj 0) (= created 0))
+  (if (and (= adj 0) (= created 0) (= joined 0))
     (setq msg (strcat msg " No axis repairs required."))
     (setq msg (strcat msg (if (> adj 0) (strcat " " (itoa adj) " axis/axes adjusted.") "")
-                          (if (> created 0) (strcat " " (itoa created) " missing axis/axes rebuilt.") ""))))
+                          (if (> created 0) (strcat " " (itoa created) " missing axis/axes rebuilt.") "")
+                          (if (> joined 0) (strcat " " (itoa joined) " broken axis segment(s) joined.") ""))))
   (if (> amb 0) (setq msg (strcat msg " " (itoa amb) " ambiguous wall(s) skipped.")))
   (princ msg)
   rec)

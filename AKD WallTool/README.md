@@ -102,6 +102,7 @@ Select wall face or [Distance/Undo] <Exit>:
 - A master with a pair of wall faces around it is checked against their midline; an off-centre master (moved by hand, or an older drawing whose master sits on a face) is moved to the true center and takes the thickness from the faces. Walls it touched stay connected.
 - A master that is a known wall but has lost its faces is kept and its faces are regenerated.
 - A wall with faces but no master gets a new centerline master, but only when both ends are proven: each end must meet a known wall (junction) or be closed by a cap across the wall. Loose parallel lines are never turned into walls, and plain AX axes are left alone.
+- Broken masters are joined: collinear pieces of the same wall (same thickness, touching or overlapping, joint inside the window) become one master, unless another wall meets at the joint.
 - Masters are then split at junctions and all walls in the window are rebuilt. One undo step; running WR again on a healthy area changes nothing.
 - Output: `WR: N wall(s) checked. N axis/axes adjusted. N missing axis/axes rebuilt.` or `No axis repairs required.`
 - TW = connection repair (gaps, overshoots, reconnecting). WR = master/axis repair (what the walls are). Open older drawings and run WR over them to migrate eccentric masters to centerlines; nothing is migrated automatically on load.
