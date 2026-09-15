@@ -266,7 +266,8 @@
 ; ERT - Move Selected Objects To Layer (all drawing layers)
 ; ============================================================
 
-(defun c:ERT (/ layer_list rec fn f dcl_id idx selected ss i ent)
+(defun c:ERT (/ layer_list rec fn f dcl_id idx selected ss i ent
+                  *ert:full* *ert:view*)
 
   (setq layer_list '())
   (setq rec (tblnext "LAYER" T))
@@ -278,10 +279,13 @@
   (if (not layer_list)
     (progn (alert "No layers in drawing.") (exit)))
 
+  (setq *ert:full* layer_list *ert:view* layer_list)
+
   (setq fn (vl-filename-mktemp "ert.dcl"))
   (setq f (open fn "w"))
   (write-line "ert_dialog : dialog { label = \"Move To Layer\";" f)
   (write-line " : text { label = \"Double-click to apply\"; }" f)
+  (write-line " : edit_box { key = \"flt\"; label = \"Search:\"; edit_width = 24; }" f)
   (write-line " : list_box { key = \"lst\"; width = 30; height = 12; allow_accept = true; }" f)
   (write-line " spacer; ok_cancel; }" f)
   (close f)
@@ -298,15 +302,24 @@
     (setq idx (itoa (- (length layer_list)
                        (length (member *ert:last-layer* layer_list))))))
 
+  (action_tile "flt"
+    (strcat
+      "(setq *ert:view*"
+      " (if (= $value \"\") *ert:full*"
+      "   (vl-remove-if-not"
+      "     '(lambda (n) (wcmatch (strcase n) (strcat \"*\" (strcase $value) \"*\")))"
+      "     *ert:full*)))"
+      "(start_list \"lst\") (mapcar 'add_list *ert:view*) (end_list)"
+      "(setq idx \"0\") (set_tile \"lst\" \"0\")"))
   (action_tile "lst"    "(setq idx $value)(if (= $reason 4) (done_dialog 1))")
   (action_tile "accept" "(done_dialog 1)")
   (action_tile "cancel" "(done_dialog 0)")
 
   (set_tile "lst" idx)
-  (mode_tile "lst" 2)
+  (mode_tile "flt" 2)
 
   (if (= (start_dialog) 1)
-    (setq selected (nth (atoi idx) layer_list)))
+    (setq selected (nth (atoi idx) *ert:view*)))
 
   (unload_dialog dcl_id)
   (vl-file-delete fn)
