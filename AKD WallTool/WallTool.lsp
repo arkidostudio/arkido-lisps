@@ -1,5 +1,5 @@
 ;;; WallTool.lsp -- AKD WallTool v0.1.0 (Stage 1: 2D Wall Core)
-;;; Commands: AX (axis), ZXW (grid axis), WW (wall), XW (axis to wall), EW (erase wall), WWF (wall from wall), TW (wall repair)
+;;; Commands: AX (axis), ZXW (grid axis), WW (wall), XW (axis to wall), EW (erase wall), WWF (wall from wall), TW (connection repair), WR (wall/axis repair)
 ;;; Plain AutoLISP + DCL only (no VL/VLA/VLAX, no XData). AutoCAD Mac + Windows.
 ;;;
 ;;; Model:  MASTER AXIS -> THICKNESS + POSITION -> THEORETICAL STRIP
@@ -814,8 +814,8 @@
   (foreach p (append pts (list (wt:w-p2 w)))
     (if (setq en (wt:pend-make (wt:mk-line prev p lyr)))
       (progn
-        (wt:reg-add en (wt:w-thk w) (wt:w-pos w))
-        (setq out (cons (list en prev p (wt:w-thk w) (wt:w-pos w)) out))))
+        (wt:reg-add en (wt:w-thk w) "CENTER")
+        (setq out (cons (list en prev p (wt:w-thk w) "CENTER") out))))
     (setq prev p))
   (reverse out))
 
@@ -1511,8 +1511,8 @@
   (wt:pend-modify (subst (cons k (wt:3d (caddr mv))) (assoc k d) d))
   (wt:setnth walls (car mv)
     (if (= (cadr mv) 0)
-      (list (car w) (caddr mv) (caddr w) (wt:w-thk w) (wt:w-pos w))
-      (list (car w) (cadr w) (caddr mv) (wt:w-thk w) (wt:w-pos w)))))
+      (list (car w) (caddr mv) (caddr w) (wt:w-thk w) "CENTER")
+      (list (car w) (cadr w) (caddr mv) (wt:w-thk w) "CENTER"))))
 
 ;; A-WALL line parallel/perpendicular to, and within reach of, one of walls
 (defun wt:tw-near-master-p (f walls / fu mid r mu)
@@ -1572,7 +1572,211 @@
       (wt:tw-repair (wt:tw-field c1 c2) (wt:cfg "TW_CONNECT_DISTANCE"))))
   (wt:end))
 
+;;; ===================================================================
+;;; 19. WR -- wall repair: audit / repair centerline masters in a field
+;;; ===================================================================
+;;; WR repairs what the walls ARE (centerline, thickness, missing masters).
+;;; TW repairs how nearby walls CONNECT. Evidence, strongest first:
+;;;   1 recognised wall master   2 A-WALL faces   3 junctions with known walls
+;;;   4 reconstruction (only when both ends are proven)
+
+(defun wt:wr-has-num (x l / r) (foreach y l (if (< (abs (- x y)) *wt:tol*) (setq r t))) r)
+
+;; sorted distinct signed offsets of A-WALL lines parallel to a-b overlapping its span
+(defun wt:wr-offsets (a b faces / u l d sa sb out)
+  (setq u (wt:unit (wt:v- b a)) l (wt:dist a b))
+  (foreach f faces
+    (setq d (wt:cross u (wt:v- (cadr f) a))
+          sa (wt:dot (wt:v- (cadr f) a) u) sb (wt:dot (wt:v- (caddr f) a) u))
+    (if (and (wt:par u (wt:unit (wt:v- (caddr f) (cadr f))))
+             (<= (abs d) *wt:recon-max*)
+             (> (max sa sb) *wt:tol*) (< (min sa sb) (- l *wt:tol*))
+             (not (wt:wr-has-num d out)))
+      (setq out (cons d out))))
+  (wt:sort out '<))
+
+;; Pure. The wall band around a master = the single pair of adjacent face offsets
+;; bracketing offset 0. Returns (mid thickness), "AMBIG" (several), or nil (none).
+(defun wt:wr-band (offs / r n)
+  (setq n 0)
+  (while (cdr offs)
+    (if (and (<= (car offs) *wt:tol*) (>= (cadr offs) (- *wt:tol*)))
+      (setq r (list (/ (+ (car offs) (cadr offs)) 2.0) (- (cadr offs) (car offs))) n (1+ n)))
+    (setq offs (cdr offs)))
+  (cond ((= n 1) r) ((> n 1) "AMBIG")))
+
+;; Proven end of a candidate band midline near station st: a junction with a known
+;; wall (crossing its segment, or continuing a collinear one) within th, else a cap
+;; line across the band exactly at the face end. nil = unproven.
+(defun wt:wr-end (m u st th faces walls / q r x)
+  (setq q (wt:v+ m (wt:v* u st)))
+  (foreach w walls
+    (if (not r)
+      (if (wt:par u (wt:w-u w))
+        (foreach k (list (wt:w-p1 w) (wt:w-p2 w))
+          (if (and (not r) (< (abs (wt:cross u (wt:v- k m))) *wt:tol*) (<= (wt:dist k q) th))
+            (setq r k)))
+        (if (and (setq x (wt:xline m u (wt:w-p1 w) (wt:w-u w)))
+                 (<= (wt:dist x q) th)
+                 (wt:on-seg x (wt:w-p1 w) (wt:w-p2 w)))
+          (setq r x)))))
+  (if (not r)
+    (foreach c faces
+      (if (and (not r)
+               (< (abs (wt:dot u (wt:unit (wt:v- (caddr c) (cadr c))))) *wt:tol-par*)
+               (< (abs (wt:dot (wt:v- (cadr c) q) u)) *wt:tol*)
+               (< (abs (wt:dot (wt:v- (caddr c) q) u)) *wt:tol*)
+               (< (abs (- (wt:dist (cadr c) (caddr c)) th)) *wt:tol*)
+               (<= (wt:dist (cadr c) q) (+ (/ th 2.0) *wt:tol*))
+               (<= (wt:dist (caddr c) q) (+ (/ th 2.0) *wt:tol*)))
+        (setq r q))))
+  r)
+
+;; Missing-master candidate from an unclaimed face line f: the nearest overlapping
+;; parallel A-WALL line on each side forms a band; the band's midline between two
+;; proven ends is the centerline. Returns ("OK" (p1 p2) th), ("AMBIG"), or nil.
+(defun wt:wr-candidate (f faces walls / a u l d sa sb bl br cands m e0 e1)
+  (setq a (cadr f) u (wt:unit (wt:v- (caddr f) a)) l (wt:dist a (caddr f)))
+  (foreach g faces
+    (setq d (wt:cross u (wt:v- (cadr g) a))
+          sa (wt:dot (wt:v- (cadr g) a) u) sb (wt:dot (wt:v- (caddr g) a) u))
+    (if (and (not (eq (car g) (car f)))
+             (wt:par u (wt:unit (wt:v- (caddr g) (cadr g))))
+             (> (abs d) *wt:tol*) (<= (abs d) *wt:recon-max*)
+             (> (max sa sb) *wt:tol*) (< (min sa sb) (- l *wt:tol*)))
+      (if (> d 0)
+        (if (or (not bl) (< d bl)) (setq bl d))
+        (if (or (not br) (> d br)) (setq br d)))))
+  (foreach d (list bl br)
+    (if d
+      (progn
+        (setq m (wt:v+ a (wt:v* (wt:perp u) (/ d 2.0)))
+              e0 (wt:wr-end m u 0.0 (abs d) faces walls)
+              e1 (wt:wr-end m u l (abs d) faces walls))
+        (if (and e0 e1 (> (wt:dist e0 e1) *wt:tol*))
+          (setq cands (cons (list "OK" (list e0 e1) (abs d)) cands))))))
+  (cond ((cdr cands) (list "AMBIG")) (cands (car cands))))
+
+;; candidate band overlaps a known wall's body (would duplicate/nest a wall)
+(defun wt:wr-overlaps-p (seg th walls / u r ta tb)
+  (setq u (wt:unit (wt:v- (cadr seg) (car seg))))
+  (foreach w walls
+    (if (and (not r) (wt:par u (wt:w-u w))
+             (< (abs (wt:cross (wt:w-u w) (wt:v- (car seg) (wt:w-p1 w)))) (- (/ (+ th (wt:w-thk w)) 2.0) *wt:tol*)))
+      (progn
+        (setq ta (wt:dot (wt:v- (car seg) (wt:w-p1 w)) (wt:w-u w))
+              tb (wt:dot (wt:v- (cadr seg) (wt:w-p1 w)) (wt:w-u w)))
+        (if (and (> (max ta tb) *wt:tol*) (< (min ta tb) (- (wt:dist (wt:w-p1 w) (wt:w-p2 w)) *wt:tol*)))
+          (setq r t)))))
+  r)
+
+;; Audit and repair wall masters in field. Returns the transaction record (or nil).
+(defun wt:wr-repair (field / net recs band reg adj amb ambs created walls i r w m p xs x nw k d
+                            pass more c seg en rec checked msg)
+  (setq net (wt:net-scan) adj 0 created 0)
+  ;; 1. audit existing masters: faces decide the centerline and thickness
+  (foreach m (car net)
+    (if (wt:tw-seg-in-field (cadr m) (caddr m) field)
+      (progn
+        (setq band (wt:wr-band (wt:wr-offsets (cadr m) (caddr m) (cadr net)))
+              reg (assoc (car m) *wt:reg*))
+        (cond
+          ((= (type band) 'LIST)
+           (setq d (wt:v* (wt:perp (wt:unit (wt:v- (caddr m) (cadr m)))) (car band)))
+           (setq recs (cons (list m (list (car m) (wt:v+ (cadr m) d) (wt:v+ (caddr m) d) (cadr band) "CENTER")) recs)))
+          (reg                                  ; recognised wall with missing faces: master wins
+           (setq recs (cons (list m (list (car m) (cadr m) (caddr m) (cadr reg) "CENTER")) recs)))
+          (band (setq ambs (cons (car m) ambs)))))))
+  (setq recs (reverse recs))
+  ;; 2. an end that touched another wall master slides along its corrected line
+  ;;    onto that master's corrected line (keeps L/T/X after re-centering)
+  (setq i 0)
+  (foreach r recs
+    (setq m (car r) w (cadr r) nw w)
+    (foreach side '(0 1)
+      (setq p (if (= side 0) (cadr m) (caddr m)) xs nil)
+      (foreach r2 recs
+        (if (and (not (eq (car (car r2)) (car m)))
+                 (wt:on-seg p (cadr (car r2)) (caddr (car r2)))
+                 (setq x (wt:xline (wt:tw-end-pt w side) (wt:w-u w) (wt:w-p1 (cadr r2)) (wt:w-u (cadr r2)))))
+          (setq xs (cons x xs))))
+      (if xs
+        (progn
+          (setq k t)
+          (foreach x xs (if (not (wt:peq x (car xs))) (setq k nil)))
+          (if (and k (<= (wt:dist (car xs) (wt:tw-end-pt w side)) *wt:recon-max*))
+            (setq nw (if (= side 0)
+                       (list (car nw) (car xs) (caddr nw) (wt:w-thk nw) "CENTER")
+                       (list (car nw) (cadr nw) (car xs) (wt:w-thk nw) "CENTER")))))))
+    (setq recs (wt:setnth recs i (list m nw)) i (1+ i)))
+  ;; 3. apply master corrections
+  (wt:pend-begin)
+  (foreach r recs
+    (setq m (car r) w (cadr r))
+    (if (or (not (wt:peq (cadr m) (wt:w-p1 w))) (not (wt:peq (caddr m) (wt:w-p2 w))))
+      (progn
+        (setq d (entget (car m)) adj (1+ adj)
+              d (subst (cons 10 (wt:3d (wt:w-p1 w))) (assoc 10 d) d)
+              d (subst (cons 11 (wt:3d (wt:w-p2 w))) (assoc 11 d) d))
+        (wt:pend-modify d)))
+    (wt:reg-add (car w) (wt:w-thk w) "CENTER")
+    (setq walls (cons w walls)))
+  ;; 4. rebuild missing masters from proven wall bands (later passes may use
+  ;;    masters rebuilt by earlier ones as junction evidence)
+  (setq pass 0 more t)
+  (while (and more (< pass 3))
+    (setq more nil pass (1+ pass) net (wt:net-scan))
+    (foreach f (cadr net)
+      (if (and (wt:tw-seg-in-field (cadr f) (caddr f) field)
+               (> (wt:dist (cadr f) (caddr f)) *wt:tol*)
+               (not (wt:any-owned f walls))
+               (not (wt:face-owners f net)))
+        (progn
+          (setq c (wt:wr-candidate f (cadr net) walls))
+          (cond
+            ((not c))
+            ((= (car c) "AMBIG") (if (not (member (car f) ambs)) (setq ambs (cons (car f) ambs))))
+            (t
+             (setq seg (cadr c))
+             (if (and (wt:pip (wt:v* (wt:v+ (car seg) (cadr seg)) 0.5) field)
+                      (not (wt:wr-overlaps-p seg (caddr c) walls))
+                      (setq en (wt:pend-make (wt:mk-line (car seg) (cadr seg) (wt:cfg "AXIS_LAYER")))))
+               (progn
+                 (wt:reg-add en (caddr c) "CENTER")
+                 (setq walls (cons (list en (car seg) (cadr seg) (caddr c) "CENTER") walls)
+                       created (1+ created) more t)))))))))
+  ;; 5. stale unclaimed A-WALL in the field beside the walls, then normalize + rebuild
+  (setq net (wt:net-scan))
+  (foreach f (cadr net)
+    (if (and (wt:tw-seg-in-field (cadr f) (caddr f) field)
+             (not (wt:any-owned f walls))
+             (not (wt:face-owners f net))
+             (not (member (car f) ambs))
+             (wt:tw-near-master-p f walls))
+      (wt:pend-erase (car f))))
+  (if walls (wt:rebuild (reverse walls) nil))
+  (setq rec *wt:pending* *wt:pending* nil
+        checked (length walls) amb (length ambs))
+  (setq msg (strcat "\nWR: " (itoa checked) " wall(s) checked."))
+  (if (and (= adj 0) (= created 0))
+    (setq msg (strcat msg " No axis repairs required."))
+    (setq msg (strcat msg (if (> adj 0) (strcat " " (itoa adj) " axis/axes adjusted.") "")
+                          (if (> created 0) (strcat " " (itoa created) " missing axis/axes rebuilt.") ""))))
+  (if (> amb 0) (setq msg (strcat msg " " (itoa amb) " ambiguous wall(s) skipped.")))
+  (princ msg)
+  rec)
+
+(defun c:WR (/ *error* c1 c2)
+  (setq *error* wt:error)
+  (wt:begin)
+  (wt:layer "AXIS")
+  (wt:layer "WALL")
+  (if (and (setq c1 (getpoint "\nSpecify first corner of wall repair area: "))
+           (setq c2 (getcorner c1 "\nSpecify opposite corner: ")))
+    (wt:wr-repair (wt:tw-field c1 c2)))
+  (wt:end))
+
 (defun c:WWO () (c:WWF))   ; old name, undocumented alias
 
-(princ "\nAKD WallTool 0.1.0 loaded: AX, ZXW, WW, XW, EW, WWF, TW.")
+(princ "\nAKD WallTool loaded: AX, ZXW, WW, XW, EW, WWF, TW, WR.")
 (princ)

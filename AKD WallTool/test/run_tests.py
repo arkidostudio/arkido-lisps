@@ -890,6 +890,106 @@ A.ev('(wt:seg-undo *t-keep*)')
 chk('XW LEFT Undo restores the original source LINEs exactly (layer 0, drawn geometry, no walls)',
     converted and not masters_now() and not walls_now() and all(e not in A.DELETED and A.DB[e] == src[e] for e in ids))
 
+# =========================== WR (Phase 2) ===========================
+def wr(fld):
+    A.G[A.Sym('*T-F*')] = [list(p) for p in fld]
+    return A.ev('(wt:wr-repair (mapcar (quote (lambda (p) (list (float (car p)) (float (cadr p))))) *t-f*))')
+def legacy(ws):
+    """fixture: old eccentric-master drawing = masters on the drawn lines + faces from the old solver"""
+    fresh()
+    for a, b, th, pos in ws: mkline(a, b, 'X-AXIS')
+    for a, b in expected(ws): mkline(a, b, 'A-WALL')
+def say(fn):
+    out = io.StringIO(); A.OUTPUT = True
+    with contextlib.redirect_stdout(out): r = fn()
+    A.OUTPUT = False
+    return out.getvalue(), r
+
+# misaligned: master moved 60 sideways
+fresh(200, 'CENTER'); add(((0,0),(4000,0))); phys = geo()[0]
+e = find_line('X-AXIS', (0,0), (4000,0)); set_end(e, 0, (0,60)); set_end(e, 1, (4000,60))
+msg, _ = say(lambda: wr(field(-500,-500,4500,500)))
+chk('WR misaligned master (moved 60): back to exact center, physical wall unchanged, reported',
+    master_set() == [mk((0,0),(4000,0))] and geo()[0] == phys and '1 axis/axes adjusted' in msg)
+
+# missing master: free wall with caps
+fresh(200, 'CENTER'); add(((0,0),(4000,0))); phys = geo()[0]
+A.entdel(find_line('X-AXIS', (0,0), (4000,0))); A.ev('(setq *wt:reg* nil)')
+msg, _ = say(lambda: wr(field(-500,-500,4500,500)))
+r = A.ev(f'(wt:recon (list nil {P(0,0)} {P(4000,0)}) (cadr (wt:net-scan)))')
+chk('WR missing master: centerline and 200 thickness reconstructed, faces unchanged',
+    master_set() == [mk((0,0),(4000,0))] and r and round(r[3]) == 200 and geo()[0] == phys and '1 missing axis/axes rebuilt' in msg)
+
+# recognised master, faces deleted: master wins, faces regenerated
+fresh(200, 'CENTER'); add(((0,0),(4000,0))); before = geo()
+for e2, a, b in walls_now(): A.entdel(e2)
+wr(field(-500,-500,4500,500))
+chk('WR recognised master with all faces erased: master preserved, A-WALL regenerated', geo() == before)
+
+# legacy LEFT and RIGHT single walls
+ok = True
+for pos, mid in (('LEFT', 100), ('RIGHT', -100)):
+    legacy([wall((0,0),(4000,0),200,pos)]); phys = geo()[0]
+    wr(field(-500,-500,4500,500))
+    ok = ok and master_set() == [mk((0,mid),(4000,mid))] and geo()[0] == phys and master_offsets_ok()
+chk('WR legacy LEFT/RIGHT wall: master moved to true center, thickness and physical wall preserved', ok)
+
+# legacy T (eccentric masters) -> centered, normalized, same physical walls
+old = [wall((0,0),(10000,0),200,'LEFT'), wall((5000,0),(5000,4000),150,'RIGHT')]
+legacy(old); phys = geo()[0]
+wr(field(-500,-500,10500,4500))
+chk('WR legacy eccentric T: centered masters, three spans, clean T identical to old physical walls',
+    geo()[0] == phys and master_offsets_ok() and normalized_ok()
+    and master_set() == sorted([mk((0,100),(5075,100)), mk((5075,100),(10000,100)), mk((5075,100),(5075,4000))]))   # RIGHT 150 branch drawn up: body on +x
+
+# T with a missing span master: rebuild branch / left arm when evidence is unambiguous
+for label, gone in (('branch', ((5000,0),(5000,4000))), ('left arm', ((0,0),(5000,0)))):
+    build([wall((0,0),(10000,0))]); add(((5000,0),(5000,4000))); before = geo()
+    A.entdel(find_line('X-AXIS', *gone)); A.ev('(setq *wt:reg* nil)')
+    wr(field(-500,-500,10500,4500))
+    chk(f'WR T with missing {label} master: rebuilt from faces + junction evidence, T intact', geo() == before)
+
+# safety: arbitrary parallel A-WALL lines are not walls
+fresh(); mkline((0,0),(3000,0),'A-WALL'); mkline((0,200),(3000,200),'A-WALL'); mkline((500,900),(2500,900),'A-WALL'); before = geo()
+wr(field(-500,-500,3500,1500))
+chk('WR does not invent a wall from arbitrary parallel A-WALL lines (no caps, no junctions)', geo() == before and not masters_now())
+# safety: AX line stays an AX line
+fresh(); ax = mkline((0,0),(5000,0),'X-AXIS'); before = geo()
+wr(field(-500,-500,5500,500))
+chk('WR leaves a plain AX line alone (no wall generated)', geo() == before)
+
+# idempotence on a healthy network
+build([wall((0,0),(10000,0))]); add(((5000,-4000),(5000,4000))); add(((0,0),(0,3000))); healthy = geo()
+m1, _ = say(lambda: wr(field(-500,-4500,10500,4500))); g1 = geo()
+m2, _ = say(lambda: wr(field(-500,-4500,10500,4500)))
+chk('WR idempotent: healthy network unchanged on first and second run, "No axis repairs required."',
+    g1 == healthy and geo() == healthy and 'No axis repairs required' in m1 and 'No axis repairs required' in m2)
+
+# combined field + undo
+def combined():
+    build([wall((0,0),(10000,0))]); add(((5000,0),(5000,4000)))                 # T
+    add(((0,-6000),(4000,-6000)))                                                # to be misaligned
+    add(((6000,-6000),(10000,-6000)))                                            # to lose its master
+    e = find_line('X-AXIS', (0,-6000), (4000,-6000)); set_end(e, 0, (0,-5940)); set_end(e, 1, (4000,-5940))
+    A.entdel(find_line('X-AXIS', (6000,-6000), (10000,-6000)))
+    for e2, a, b in walls_now():
+        if abs(a[1]-75) < 1e-6 and abs(b[1]-75) < 1e-6: A.entdel(e2); break      # damage a face
+    # merge the through wall back into one unsplit master (legacy long master through the T)
+    for x in (find_line('X-AXIS', (0,0), (5000,0)), find_line('X-AXIS', (5000,0), (10000,0))): A.entdel(x)
+    mkline((0,0),(10000,0),'X-AXIS')
+    A.ev('(setq *wt:reg* nil)')
+combined(); base = geo(); ents = {e: list(A.DB[e]) for e, a, b in masters_now()}
+rec = wr(field(-500,-6500,10500,4500))
+repaired = master_set() == sorted([mk((0,0),(5000,0)), mk((5000,0),(10000,0)), mk((5000,0),(5000,4000)),
+                                    mk((0,-6000),(4000,-6000)), mk((6000,-6000),(10000,-6000))]) and lines_match_masters()
+undo_rec(rec)
+chk('WR combined (misaligned + missing + damaged face + unsplit T): all repaired; Undo restores exact original',
+    repaired and geo() == base and all(e not in A.DELETED and A.DB[e] == d for e, d in ents.items()))
+A.POINTQ[:] = [[-500.0, -500.0, 0.0], [4500.0, 500.0, 0.0]]
+fresh(200, 'CENTER'); add(((0,0),(4000,0))); e = find_line('X-AXIS', (0,0), (4000,0)); set_end(e, 0, (0,60)); set_end(e, 1, (4000,60))
+A.ev('(c:WR)')
+chk('WR command: two corners -> repair runs', master_set() == [mk((0,0),(4000,0))])
+
 # Position submenu keys (shared by WW and XW)
 res = []
 for key, want in (('Q-left', 'LEFT'), ('W-center', 'CENTER'), ('E-right', 'RIGHT'), ('Left', 'LEFT'), ('Right', 'RIGHT')):

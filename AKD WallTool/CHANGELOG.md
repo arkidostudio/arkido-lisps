@@ -1,5 +1,11 @@
 # AKD WallTool — Changelog
 
+## Unreleased (walltool-centerline)
+
+- **Centerline masters** — every stored X-AXIS master is the wall's geometric centerline. LEFT / CENTER / RIGHT are creation alignments for WW, Rectangle and XW; offset ends meet the centerline they land on, so drawn walls look the same as before.
+- **WR** — wall repair: audits masters in a window, centers off-centre and legacy eccentric masters from their faces, rebuilds missing masters only when both ends are proven, normalizes and rebuilds. One undo step, idempotent.
+- Reconstruction recognises centered masters only; older eccentric drawings migrate through WR.
+
 ## v0.1.0 — Stage 1: 2D Wall Core
 
 First stable development baseline.
