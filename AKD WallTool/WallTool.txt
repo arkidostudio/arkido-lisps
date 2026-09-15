@@ -1,0 +1,40 @@
+# AKD WALLTOOL CONFIGURATION
+# KEY=VALUE. Lines starting with # are comments. [Sections] are for readability only.
+# An invalid value falls back to its built-in default; the rest still apply.
+# Layer properties apply only when the tool creates a missing layer.
+
+[WALL]
+DEFAULT_THICKNESS=150
+THICKNESSES=75,100,125,150,200,250,300
+# CENTER | LEFT | RIGHT (relative to drawing direction)
+DEFAULT_POSITION=CENTER
+
+[LAYERS]
+AXIS_LAYER=X-AXIS
+AXIS_COLOR=1
+AXIS_LINETYPE=DASHDOT
+AXIS_PLOT=NO
+
+GRID_LAYER=X-GRID
+GRID_COLOR=8
+GRID_LINETYPE=CONTINUOUS
+GRID_PLOT=YES
+
+WALL_LAYER=A-WALL
+WALL_COLOR=7
+WALL_LINETYPE=CONTINUOUS
+WALL_PLOT=YES
+
+[GRID]
+BUBBLE_DIAMETER=800
+# axis overhang beyond the outermost grid lines; bubbles sit at the overhang ends
+BUBBLE_OFFSET=500
+TEXT_HEIGHT=350
+
+[OFFSET]
+# WWF: clear distance from picked face to the new wall
+DEFAULT_OFFSET=1500
+
+[REPAIR]
+# TW: largest gap/overshoot TW closes by moving a free master endpoint along its own direction
+TW_CONNECT_DISTANCE=150
