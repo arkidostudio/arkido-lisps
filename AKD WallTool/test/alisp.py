@@ -415,3 +415,7 @@ for k, v in {'ENTSEL': entsel, 'GETDIST': lambda *a: DISTQ.pop(0) if DISTQ else 
 POINTQ = []
 G[Sym('GETPOINT')] = lambda *a: POINTQ.pop(0) if POINTQ else None
 G[Sym('GETCORNER')] = lambda *a: POINTQ.pop(0) if POINTQ else None
+
+# --- WW loop stubs
+REALQ = []
+G[Sym('GETREAL')] = lambda *a: REALQ.pop(0) if REALQ else None

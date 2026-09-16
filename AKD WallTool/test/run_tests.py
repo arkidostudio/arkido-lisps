@@ -1016,17 +1016,104 @@ fresh(200, 'CENTER'); add(((0,0),(4000,0))); e = find_line('X-AXIS', (0,0), (400
 A.ev('(c:WR)')
 chk('WR command: two corners -> repair runs', master_set() == [mk((0,0),(4000,0))])
 
+# =========================== WW: Alignment / Width changes during one run ===========================
+def ww_run(steps, th=150.0, pos='CENTER', keep_session=False):
+    """drive the real c:WW loop. steps: points (x,y), 'Enter', ('A', key), ('W', width), 'Undo', 'Close'"""
+    if not keep_session:
+        fresh(th, pos)
+    pts, kws, reals = [], [], []
+    for st in steps:
+        if isinstance(st, tuple) and st[0] == 'A': pts.append('Alignment'); kws.append(st[1])
+        elif isinstance(st, tuple) and st[0] == 'W': pts.append('Width'); reals.append(float(st[1]))
+        elif st == 'Enter': pts.append(None)
+        elif isinstance(st, str): pts.append(st)
+        else: pts.append([float(st[0]), float(st[1]), 0.0])
+    A.POINTQ[:] = pts; A.KWQUEUE[:] = kws; A.REALQ[:] = reals
+    A.ev('(c:WW)')
+    return not A.POINTQ and not A.KWQUEUE and not A.REALQ
+def widths_along(chain_pts):
+    """recovered thickness of the master whose span covers each input segment midpoint region"""
+    out = []
+    for e, a, b in masters_now():
+        r = A.ev(f'(wt:recon (list nil {P(*a)} {P(*b)}) (cadr (wt:net-scan)))')
+        out.append(round(r[3]) if r else None)
+    return sorted(out)
+def no_zero_masters(): return all(math.dist(a, b) > 1e-3 for _, a, b in masters_now())
+
+# 4-segment run: CENTER -> LEFT -> RIGHT -> CENTER
+P_ = [(0,0),(4000,0),(4000,3000),(8000,5000),(8000,8000)]
+steps = [P_[0], P_[1], ('A','Left'), P_[2], ('A','Right'), P_[3], ('A','Center'), P_[4], 'Enter']
+consumed = ww_run(steps)
+ref = [wall(P_[0],P_[1],150,'CENTER'), wall(P_[1],P_[2],150,'LEFT'), wall(P_[2],P_[3],150,'RIGHT'), wall(P_[3],P_[4],150,'CENTER')]
+chk('WW one run C->L->R->C: 4 walls, each placed by its own alignment (old-model faces), all masters centered',
+    consumed and len(masters_now()) == 4 and master_offsets_ok() and normalized_ok() and no_zero_masters()
+    and same_lines(walls_now(), expected(ref)) and A.ev('*wt:pos*') == 'CENTER')
+# previous segments are not reinterpreted: after segment 2 (LEFT), segment 1's CENTER faces away from the corner are unchanged
+ww_run([P_[0], P_[1], 'Enter']); seg1 = [x for x in geo()[0] if x[0] < 3000 and x[2] < 3000]
+ww_run([P_[0], P_[1], ('A','Left'), P_[2], ('A','Right'), 'Enter'])
+seg1_after = [x for x in geo()[0] if x[0] < 3000 and x[2] < 3000]
+chk('WW alignment change does not move or re-place the earlier CENTER segment; pending alignment commits nothing',
+    seg1_after == seg1 and len(masters_now()) == 2 and A.ev('*wt:pos*') == 'RIGHT')
+
+# width + alignment independent: 150C, 200C, 200L, 100L, 100R, 250C
+Q_ = [(0,0),(4000,0),(4000,3000),(8000,3000),(8000,6000),(12000,6000),(12000,9000)]
+steps = [Q_[0], Q_[1], ('W',200), Q_[2], ('A','Left'), Q_[3], ('W',100), Q_[4], ('A','Right'), Q_[5], ('W',250), ('A','Center'), Q_[6], 'Enter']
+consumed = ww_run(steps)
+ref = [wall(Q_[0],Q_[1],150,'CENTER'), wall(Q_[1],Q_[2],200,'CENTER'), wall(Q_[2],Q_[3],200,'LEFT'),
+       wall(Q_[3],Q_[4],100,'LEFT'), wall(Q_[4],Q_[5],100,'RIGHT'), wall(Q_[5],Q_[6],250,'CENTER')]
+chk('WW one run 150C/200C/200L/100L/100R/250C: widths and alignments independent, exact placement, centered masters',
+    consumed and len(masters_now()) == 6 and master_offsets_ok() and no_zero_masters()
+    and widths_along(Q_) == sorted([150,200,200,100,100,250]) and same_lines(walls_now(), expected(ref))
+    and A.ev('*wt:thk*') == 250.0 and A.ev('*wt:pos*') == 'CENTER')
+
+# every transition on a connected non-collinear corner
+ok = True; bad = []
+for a_, b_ in (('Center','Left'), ('Left','Center'), ('Center','Right'), ('Right','Center'), ('Left','Right'), ('Right','Left')):
+    for c3 in ((4000,3000), (6500,2500)):
+        consumed = ww_run([(0,0), ('A', a_), (4000,0), ('A', b_), c3, 'Enter'])
+        ref = [wall((0,0),(4000,0),150,a_.upper()), wall((4000,0),c3,150,b_.upper())]
+        good = consumed and len(masters_now()) == 2 and master_offsets_ok() and normalized_ok() and no_zero_masters() \
+               and same_lines(walls_now(), expected(ref))
+        if not good: ok = False; bad.append((a_, b_, c3))
+chk('WW alignment transitions C<->L, C<->R, L<->R at 90 deg and oblique corners: clean corner, centered masters', ok)
+if bad: print('   ', bad)
+
+# undo keeps current alignment; next segment uses it
+consumed = ww_run([P_[0], P_[1], ('A','Left'), P_[2], ('A','Right'), P_[3], 'Undo', (0,6000), 'Enter'])
+ref = [wall(P_[0],P_[1],150,'CENTER'), wall(P_[1],P_[2],150,'LEFT'), wall(P_[2],(0,6000),150,'RIGHT')]
+chk('WW Undo removes only the RIGHT segment, Alignment stays RIGHT, the next segment is drawn RIGHT from the same input point',
+    consumed and len(masters_now()) == 3 and A.ev('*wt:pos*') == 'RIGHT' and master_offsets_ok()
+    and same_lines(walls_now(), expected(ref)))
+
+# close uses the settings current at C
+R_ = [(0,0),(6000,0),(6000,4000),(0,4000)]
+consumed = ww_run([R_[0], R_[1], ('A','Left'), R_[2], ('W',200), ('A','Right'), R_[3], ('W',250), ('A','Left'), 'Close'])
+ref = [wall(R_[0],R_[1],150,'CENTER'), wall(R_[1],R_[2],150,'LEFT'), wall(R_[2],R_[3],200,'RIGHT'), wall(R_[3],R_[0],250,'LEFT')]
+chk('WW Close after changing Width 250 + Alignment LEFT: closing wall is 250 LEFT, loop closed with centered masters',
+    consumed and len(masters_now()) == 4 and master_offsets_ok() and no_zero_masters()
+    and widths_along(R_) == sorted([150,150,200,250]) and same_lines(walls_now(), expected(ref)))
+
+# session memory across WW runs
+ww_run([(0,0), (4000,0), ('A','Right'), ('W',200), 'Enter'])
+ww_run([(0,-5000), (4000,-5000), 'Enter'], keep_session=True)
+chk('WW remembers the last Alignment and Width for the next WW run', A.ev('*wt:pos*') == 'RIGHT' and A.ev('*wt:thk*') == 200.0
+    and mk((0,-5100),(4000,-5100)) in master_set())
+
 # Position submenu keys (shared by WW and XW)
 res = []
-for key, want in (('Q-left', 'LEFT'), ('W-center', 'CENTER'), ('E-right', 'RIGHT'), ('Left', 'LEFT'), ('Right', 'RIGHT')):
+for key, want in (('Q', 'LEFT'), ('W', 'CENTER'), ('E', 'RIGHT'), ('Left', 'LEFT'), ('Right', 'RIGHT'), ('Center', 'CENTER')):
     A.KWQUEUE[:] = [key]; A.ev('(wt:ww-position)'); res.append(A.ev('*wt:pos*') == want)
 A.KWQUEUE[:] = []; settings(150, 'RIGHT'); A.ev('(wt:ww-position)')
-chk('Position submenu: Q=LEFT W=CENTER E=RIGHT, Enter keeps current', all(res) and A.ev('*wt:pos*') == 'RIGHT')
+enter_keeps = A.ev('*wt:pos*') == 'RIGHT'
+A.KWQUEUE[:] = ['XYZ']; A.ev('(wt:ww-position)')
+chk('Alignment submenu: Left/Center/Right and Q/W/E, Enter keeps current, invalid input leaves it unchanged',
+    all(res) and enter_keeps and A.ev('*wt:pos*') == 'RIGHT')
 src = open(os.path.join(HERE, '..', 'WallTool.lsp')).read()
-chk('Prompts: posiTion shown in WW/XW, no Eccentricity, submenu keys valid',
-    '[Width/posiTion/Rectangle/Settings]' in src and '[Width/posiTion/Undo/Close]' in src and '[Width/posiTion]' in src
-    and 'Eccentricity' not in src and '"Q-left W-center E-right Left Center Right"' in src
-    and src.count('"Width posiTion') == 3)
+chk('Prompts: WW shows Alignment in start and next-point prompts, XW keeps [Width/posiTion], submenu keys valid',
+    '[Width/Alignment/Rectangle/Settings]' in src and '[Width/Alignment/Rectangle/Undo/Settings]' in src
+    and '[Width/Alignment/Rectangle/Undo/Close/Settings]' in src and '"Width Alignment Rectangle Undo Close Settings"' in src
+    and '[Width/posiTion]' in src and 'Eccentricity' not in src and '"Left Center Right Q W E"' in src
+    and 'Alignment [Left/Center/Right] <' in src)
 
 print(f'\n{fails} failure(s)')
 sys.exit(1 if fails else 0)

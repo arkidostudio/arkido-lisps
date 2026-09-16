@@ -884,10 +884,15 @@
         n (wt:v* (wt:perp (wt:unit (wt:v- p2 p1))) off))
   (list (wt:v+ p1 n) (wt:v+ p2 n)))
 
-;; WW chain context (only while c:WW binds *wt:chain-on*): (drawn-point ename end-point)
-(defun wt:chain-entry (dpt en / r)
+;; WW chain context (only while c:WW binds *wt:chain-on*): (drawn-point ename end-point).
+;; An entry is used only while its end-point is still an endpoint of that master, so
+;; entries left behind by an undone segment (which had moved the master) are skipped.
+(defun wt:chain-entry (dpt en / r d)
   (foreach c *wt:chain*
-    (if (and (not r) (eq (cadr c) en) (wt:peq (car c) dpt) (entget en)) (setq r c)))
+    (if (and (not r) (eq (cadr c) en) (wt:peq (car c) dpt) (setq d (entget en))
+             (or (wt:peq (caddr c) (wt:pt2 (cdr (assoc 10 d))))
+                 (wt:peq (caddr c) (wt:pt2 (cdr (assoc 11 d))))))
+      (setq r c)))
   r)
 
 ;; Centerlines for drawn segments with thickness th and alignment pos.
@@ -1042,15 +1047,17 @@
   (if (numberp v) (setq *wt:thk* (float v)))
   (wt:status))
 
-;; Position submenu, left-hand keys: Q = LEFT, W = CENTER, E = RIGHT
-;; (L/C/R also accepted). Keywords may contain hyphens; the capital is the key.
-(defun wt:ww-position (/ k)
-  (initget "Q-left W-center E-right Left Center Right")
-  (if (setq k (getkword (strcat "\nPosition [Q-left/W-center/E-right] <"
-                                (cdr (assoc *wt:pos* '(("LEFT" . "Q-left") ("CENTER" . "W-center") ("RIGHT" . "E-right"))))
-                                ">: ")))
-    (setq *wt:pos* (cdr (assoc (substr k 1 1) '(("Q" . "LEFT") ("W" . "CENTER") ("E" . "RIGHT")
-                                                 ("L" . "LEFT") ("C" . "CENTER") ("R" . "RIGHT"))))))
+;; Alignment submenu (the one current creation alignment, *wt:pos*). Left/Center/Right,
+;; with left-hand aliases Q = LEFT, W = CENTER, E = RIGHT. Enter keeps the current
+;; value; anything unrecognised leaves it unchanged.
+(defun wt:ww-position (/ k v)
+  (initget "Left Center Right Q W E")
+  (setq k (getkword (strcat "\nAlignment [Left/Center/Right] <"
+                            (substr *wt:pos* 1 1) (strcase (substr *wt:pos* 2) t) ">: ")))
+  (if (and (= (type k) 'STR) (> (strlen k) 0)
+           (setq v (cdr (assoc (strcase (substr k 1 1)) '(("Q" . "LEFT") ("W" . "CENTER") ("E" . "RIGHT")
+                                                          ("L" . "LEFT") ("C" . "CENTER") ("R" . "RIGHT"))))))
+    (setq *wt:pos* v))
   (wt:status))
 
 (defun wt:ww-settings (/ k)
@@ -1092,17 +1099,18 @@
   (wt:layer "WALL")
   (wt:status)
   (while (not done)
-    ;; "posiTion": the capital T is the keyword letter
+    ;; Width and Alignment are current creation settings: each segment uses the
+    ;; values active when it is committed; earlier segments are never re-placed.
     (setq q (if p
-              (wt:getpt p "\nSpecify next point or [Width/posiTion/Undo/Close]: "
-                        "Width posiTion Undo Close")
-              (wt:getpt nil (if hist "\nSpecify start point or [Width/posiTion/Rectangle/Undo/Settings]: "
-                                     "\nSpecify start point or [Width/posiTion/Rectangle/Settings]: ")
-                        "Width posiTion Rectangle Undo Settings")))
+              (wt:getpt p "\nSpecify next point or [Width/Alignment/Rectangle/Undo/Close/Settings]: "
+                        "Width Alignment Rectangle Undo Close Settings")
+              (wt:getpt nil (if hist "\nSpecify start point or [Width/Alignment/Rectangle/Undo/Settings]: "
+                                     "\nSpecify start point or [Width/Alignment/Rectangle/Settings]: ")
+                        "Width Alignment Rectangle Undo Settings")))
     (cond
       ((not q) (setq done t))
       ((= q "Width") (wt:ww-thickness))
-      ((= q "posiTion") (wt:ww-position))
+      ((= q "Alignment") (wt:ww-position))
       ((= q "Settings") (wt:ww-settings))
       ((= q "Rectangle")
        (setq p nil p0 nil pts nil *wt:chain* nil)

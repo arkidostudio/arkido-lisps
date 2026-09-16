@@ -62,15 +62,15 @@ Plain `KEY=VALUE` text; `#` starts a comment; `[SECTIONS]` are only for readabil
 **WW**
 ```
 Current wall: 150 mm | CENTER
-Specify start point or [Width/posiTion/Rectangle/Settings]:
-Specify next point or [Width/posiTion/Undo/Close]:
+Specify start point or [Width/Alignment/Rectangle/Settings]:
+Specify next point or [Width/Alignment/Rectangle/Undo/Close/Settings]:
 ```
 - `W` Width: preset dialog with Custom (command-line fallback).
-- `T` posiTion: `Q` Left, `W` Center, `E` Right, relative to the drawing direction. Left = the wall body is on the left of the line you draw. The stored master is placed at the resulting wall's centerline.
+- `A` Alignment: `Alignment [Left/Center/Right]` (also `Q` Left, `W` Center, `E` Right), relative to the drawing direction. Left = the wall body is on the left of the line you draw. The stored master is placed at the resulting wall's centerline.
 - `R` Rectangle: two corners give four walls, counter-clockwise, so Left puts the walls inside the rectangle and Right outside; the four masters are their centerlines.
 - `U` Undo removes the last segment or rectangle; `C` Close joins back to the start after two or more segments.
 - Snapping to an existing wall's face connects to that wall's master.
-- Width and position are remembered for the session and shared with XW. One WW command is one AutoCAD undo step.
+- Width and Alignment can be changed at any time while drawing; each new segment uses the values active when it is placed, earlier segments are not changed, and Undo removes walls without rewinding the settings. Close uses the current values. Both are remembered for the session and shared with XW (`T` in XW opens the same Alignment choice). One WW command is one AutoCAD undo step.
 
 **XW** — preselect LINEs, or `Select axis lines or [Width/posiTion]:` (pick, window or crossing; Enter to finish). Each line is the reference the wall is placed against (width + position); the line itself becomes the wall's centerline master on X-AXIS (Undo restores the original line) and are solved as one network with any walls they touch. Non-LINE objects, lines already walls, lines on A-WALL and zero-length lines are skipped.
 
