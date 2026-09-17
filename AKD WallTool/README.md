@@ -12,7 +12,10 @@ Architectural axes, grids and intelligent 2D walls for AutoCAD. Plain AutoLISP +
 | `XW` | Axis to Wall | Converts selected LINEs into walls. |
 | `WWF` | Wall From Wall | Parallel wall at a clear distance from a clicked wall face. |
 | `EW` | Erase Wall | Erases one wall span and repairs the walls around it. |
-| `TW` | Local Wall Repair | Connection repair: rebuilds and reconnects walls inside a window. |
+| `WWD` | Wall to Distance | Moves a wall so a picked face is at a clear distance from another wall's face. |
+| `WWE` | Wall Extend | Extends one wall end to a picked target wall. |
+| `TW` | Local Wall Repair | Connection repair: rebuilds and reconnects AKD walls and ordinary double-line walls inside a window. |
+| `TX` | Line Junction Cleanup | Trims/extends ordinary LINEs into clean L, T and X junctions (never touches AKD walls). |
 | `WR` | Wall Repair | Axis repair: audits and repairs wall centerline masters inside a window. |
 
 ## How it works
@@ -50,6 +53,8 @@ Plain `KEY=VALUE` text; `#` starts a comment; `[SECTIONS]` are only for readabil
 | `BUBBLE_DIAMETER` `BUBBLE_OFFSET` `TEXT_HEIGHT` | 800, 500, 350 | Grid bubbles |
 | `DEFAULT_OFFSET` | 1500 | First WWF distance |
 | `TW_CONNECT_DISTANCE` | 150 | Largest gap/overshoot TW closes |
+| `TX_CONNECT_DISTANCE` | 150 | Largest trim/extend TX applies automatically |
+| `TX_WALL_MAX` | 600 | Largest spacing of two parallel lines treated as one double-line wall |
 
 `WW` > Settings shows the loaded file and values, and can reload it.
 
@@ -90,7 +95,13 @@ Select wall face or [Distance/Undo] <Exit>:
 - The distance is remembered for the session. `U` removes the last wall made in the command.
 - `WWO` still runs WWF.
 
-**TW** — `Specify first corner of wall repair area:` / `Specify opposite corner:`.
+**WWD** — `Select wall face to move:`, `Select reference wall face:`, `Enter distance <1200>:`. The whole first wall moves perpendicular to itself so the picked face is at that clear distance from the reference face (it stays on its side; 0 allowed). Walls must be parallel. AKD walls move with their centerline master and are rebuilt with their junctions; ordinary double-line walls are moved and their old and new junctions cleaned. The distance is remembered for the session. One undo step.
+
+**WWE** — `Select wall to extend:` (a face or cap near the end to extend), `Select target wall face:`. Extends only that end along the wall until it reaches the target wall, forming a T there; the other end never moves, and a wall is never shortened (use EW). A free, L- or T-connected end is supported: an old L partner becomes a T branch, and an old T host is crossed (X). Refused with a message, and nothing changed: target behind or parallel, target not reached, something in the way, ambiguous or collinear-connected ends, and mixed AKD / ordinary walls. One undo step.
+
+**TX** — preselect LINEs, or `Specify first corner of repair area:` / `Specify opposite corner:`. Repairs ordinary line geometry on any layer: merges collinear pieces and small gaps, closes L and T corners of single lines and of double-line walls (up to `TX_WALL_MAX` apart), cuts clean X crossings, and caps free double-line wall ends inside a window. X-AXIS lines and lines belonging to AKD walls (including older off-centre walls) are left alone and counted. Ambiguous junctions are left unchanged. One undo step.
+
+**TW** — `Specify first corner of wall repair area:` / `Specify opposite corner:`. Handles AKD walls (below) and then ordinary double-line walls in the same window: short gaps and overshoots between them are closed along their own direction and the visible junctions cleaned like TX. AKD wall faces, and faces of older off-centre walls, are never treated as ordinary walls.
 - Rebuilds the walls around the window: missing or wrong caps, broken corners, T and X junctions, damaged or stale faces.
 - The current master geometry wins, including masters you moved or stretched.
 - A free wall end inside the window is extended or shortened along its own direction, by at most `TW_CONNECT_DISTANCE`, to meet another wall (T) or another free end (L). The new junction must be inside the window.
@@ -105,7 +116,7 @@ Select wall face or [Distance/Undo] <Exit>:
 - Broken masters are joined: collinear pieces of the same wall (same thickness, touching or overlapping, joint inside the window) become one master, unless another wall meets at the joint.
 - Masters are then split at junctions and all walls in the window are rebuilt. One undo step; running WR again on a healthy area changes nothing.
 - Output: `WR: N wall(s) checked. N axis/axes adjusted. N missing axis/axes rebuilt.` or `No axis repairs required.`
-- TW = connection repair (gaps, overshoots, reconnecting). WR = master/axis repair (what the walls are). Open older drawings and run WR over them to migrate eccentric masters to centerlines; nothing is migrated automatically on load.
+- TW = connection repair (gaps, overshoots, reconnecting). WR = master/axis repair (what the walls are). TX = junction repair of ordinary lines. WWD / WWE = editing walls. Open older drawings and run WR over them to migrate eccentric masters to centerlines; nothing is migrated automatically on load.
 
 ## Known limitations
 
@@ -123,7 +134,7 @@ Select wall face or [Distance/Undo] <Exit>:
 - Wall commands scan all X-AXIS / A-WALL lines in the current space, which may be slow on very large drawings.
 - Geometry is flattened to Z = 0 WCS. Arcs are not supported.
 - Pick points and windows in a rotated UCS are not yet confirmed in AutoCAD.
-- Legacy drawings are only migrated by WR. Until then, a master that is not centered between its faces is not recognised as a wall by EW, WWF or TW.
+- Legacy drawings are only migrated by WR. Until then, a master that is not centered between its faces is not recognised as a wall by EW, WWF or TW, and WWD / WWE refuse it with "Legacy wall axis detected. Run WR first."; TX and TW leave its lines alone.
 - WR needs both faces of a wall beside a master. A master lying exactly on a face with other parallel wall faces on its other side is ambiguous and skipped. Two neighbouring walls that have both lost their masters at the same corner (no cap, no known wall at that end) are not reconstructed.
 - WR cleanup erases unclaimed A-WALL pieces inside the window next to the walls it repairs.
 - `WW`, `AX` and `EW` share names with older AKDWall / AKDAxisTool / AKDDoorWin tools; do not load both.
@@ -135,13 +146,18 @@ Select wall face or [Distance/Undo] <Exit>:
 - Gaps between parallel or collinear walls are not repaired.
 - Wall/wall only; no column support yet.
 
+**WWD / WWE / TX**
+- WWD needs parallel walls.
+- WWE never shortens, does not extend a collinear-connected end, and refuses junctions between AKD and ordinary walls.
+- TX only works on ordinary LINEs; it leaves AKD wall geometry to the wall commands.
+
 ## Tests
 
 ```
 python3 test/run_tests.py
 ```
 
-Runs the real `WallTool.lsp` logic in a small AutoLISP-subset interpreter (`test/alisp.py`) against an in-memory drawing: junction geometry against independently sampled outlines, plus WW, Rectangle, XW, EW, WWF, TW, undo, preselection and configuration scenarios. It validates the logic only; AutoCAD interaction (picking, dialogs, undo groups) must be checked in AutoCAD.
+Runs the real `WallTool.lsp` logic in a small AutoLISP-subset interpreter (`test/alisp.py`) against an in-memory drawing: junction geometry against independently sampled outlines, plus WW, Rectangle, XW, EW, WWF, TW, undo, preselection and configuration scenarios. `python3 test/tx_only.py` runs only the TX / WWD / WWE part for quick iteration; the full suite is the authoritative check. It validates the logic only; AutoCAD interaction (picking, dialogs, undo groups) must be checked in AutoCAD.
 
 ## Internals (for development)
 

@@ -39,3 +39,7 @@ DEFAULT_OFFSET=1500
 [REPAIR]
 # TW: largest gap/overshoot TW closes by moving a free master endpoint along its own direction
 TW_CONNECT_DISTANCE=150
+# TX: largest trim/extend TX applies automatically to selected LINEs
+TX_CONNECT_DISTANCE=150
+# TX: largest spacing of two parallel lines treated as one wall (double-line junctions)
+TX_WALL_MAX=600

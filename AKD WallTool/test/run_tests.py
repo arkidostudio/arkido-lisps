@@ -1099,6 +1099,867 @@ ww_run([(0,-5000), (4000,-5000), 'Enter'], keep_session=True)
 chk('WW remembers the last Alignment and Width for the next WW run', A.ev('*wt:pos*') == 'RIGHT' and A.ev('*wt:thk*') == 200.0
     and mk((0,-5100),(4000,-5100)) in master_set())
 
+# =========================== TX (geometry-first junction cleanup) ===========================
+def txl(*segs, layer='0'): return [mkline(a, b, layer) for a, b in segs]
+def lines0(layer='0'): return sorted(lk(a, b) for _, a, b in A.db_lines(layer))
+def lk(a, b):
+    a, b = tuple(round(float(v), 3) + 0.0 for v in a), tuple(round(float(v), 3) + 0.0 for v in b); return min(a, b) + max(a, b)
+def txrun(ens):
+    A.G[A.Sym('*T-ENS*')] = list(ens)
+    out = io.StringIO(); A.OUTPUT = True
+    with contextlib.redirect_stdout(out): A.ev('(wt:tx-run *t-ens*)')
+    A.OUTPUT = False; return out.getvalue()
+def txcase(segs, layer='0'):
+    fresh(); ens = txl(*segs, layer=layer); o = txrun(ens); return lines0(layer), o
+def exp(*segs): return sorted(lk(a, b) for a, b in segs)
+def idem(segs, layer='0'):
+    fresh(); ens = txl(*segs, layer=layer); txrun(ens); first = lines0(layer)
+    o = txrun([e for e, a, b in A.db_lines(layer)]); return first == lines0(layer) and '0 junction(s)' in o
+
+# 1-3 simple L
+g, o = txcase([((0,0),(995,0)), ((1000,40),(1000,2000))])
+chk('TX 1: two lines short of corner -> both meet', g == exp(((0,0),(1000,0)), ((1000,0),(1000,2000))) and '1 junction' in o)
+g, o = txcase([((0,0),(1060,0)), ((1000,0),(1000,2000))])
+chk('TX 2: one overshoots corner -> trimmed', g == exp(((0,0),(1000,0)), ((1000,0),(1000,2000))))
+g, o = txcase([((0,0),(1060,0)), ((1000,-50),(1000,2000))])
+chk('TX 3: both overshoot -> both terminate at intersection', g == exp(((0,0),(1000,0)), ((1000,0),(1000,2000))))
+# 4-7 T / X
+g, o = txcase([((0,0),(5000,0)), ((2000,40),(2000,3000))])
+chk('TX 4: T branch short -> extended, host untouched', g == exp(((0,0),(5000,0)), ((2000,0),(2000,3000))))
+g, o = txcase([((0,0),(5000,0)), ((2000,-60),(2000,3000))])
+chk('TX 5: T branch overshoot -> trimmed to host', g == exp(((0,0),(5000,0)), ((2000,0),(2000,3000))))
+clean_t = [((0,0),(5000,0)), ((2000,0),(2000,3000))]
+g, o = txcase(clean_t)
+chk('TX 6: clean T -> no change', g == exp(*clean_t) and '0 junction' in o)
+clean_x = [((0,0),(5000,0)), ((2000,-2000),(2000,3000))]
+g, o = txcase(clean_x)
+chk('TX 7: clean X -> no change, not split', g == exp(*clean_x) and '0 junction' in o)
+# 8-10 collinear
+g, o = txcase([((0,0),(2000,0)), ((2080,0),(5000,0))])
+chk('TX 8: collinear gap -> one line', g == exp(((0,0),(5000,0))))
+g, o = txcase([((0,0),(3000,0)), ((2000,0),(5000,0))])
+chk('TX 9: collinear overlap -> one line', g == exp(((0,0),(5000,0))))
+g, o = txcase([((0,0),(3000,0)), ((3000,0),(0,0)), ((500,0),(900,0))])
+chk('TX 10: exact duplicate + tiny fragment -> one line', g == exp(((0,0),(3000,0))))
+# 11 unrelated / far
+far = [((0,0),(2000,0)), ((2600,500),(2600,3000)), ((0,3000),(1500,3000))]
+g, o = txcase(far)
+chk('TX 11: unrelated lines beyond distance -> no change', g == exp(*far) and '0 junction' in o)
+# 12 ambiguous endpoint: two hosts at equal distance
+amb = [((0,0),(1000,0)), ((1040,-2000),(1040,2000)), ((960,-2000),(960,2000))]
+g, o = txcase(amb)
+chk('TX 12: ambiguous endpoint -> no change, reported', g == exp(*amb) and 'ambiguous' in o)
+amb2 = [((0,0),(1000,0)), ((1050,-2000),(1050,2000)), ((1000,60),(3000,60))]
+g, o = txcase([((0,0),(1000,0)), ((1030,-2000),(1030,2000)), ((5000,5000),(6000,5000))])
+chk('TX 12b: unambiguous single host still repaired', ((1030.0,0.0) in [(r[2], r[3]) for r in g]) or lk((0,0),(1030,0)) in g)
+# 13 angled L (37 deg)
+c = math.cos(math.radians(37)); s_ = math.sin(math.radians(37))
+p_end = (1000 + 30*c, 30*s_)
+g, o = txcase([((0,0),(1000,0)), (p_end, (1000 + 2000*c, 2000*s_))])
+chk('TX 13: angled 37 deg L -> exact intersection', g == exp(((0,0),(1000,0)), ((1000,0),(1000 + 2000*c, 2000*s_))))
+# 14 selection order
+segs14 = [((0,0),(995,0)), ((1000,40),(1000,2000)), ((0,3000),(2000,3000)), ((2050,3000),(4000,3000)), ((3000,2940),(3000,1000))]
+fresh(); ens = txl(*segs14); txrun(ens); g1 = lines0()
+fresh(); ens = txl(*segs14); txrun(list(reversed(ens))); g2 = lines0()
+chk('TX 14: reversed selection order -> identical geometry', g1 == g2)
+chk('TX idempotent: second run over simple fixes changes nothing', idem(segs14))
+
+# 15 double-line L (90 deg): horizontal wall y 0..150 to the right, vertical wall x 1000..1150 downwards
+dl = [((0,150),(1080,150)), ((0,0),(1080,0)), ((1150,80),(1150,-2000)), ((1000,80),(1000,-2000))]
+g, o = txcase(dl)
+exp15 = exp(((0,150),(1150,150)), ((0,0),(1000,0)), ((1150,150),(1150,-2000)), ((1000,0),(1000,-2000)))
+chk('TX 15: double-line L -> clean mitred corner', g == exp15)
+chk('TX 15: idempotent', idem(dl))
+# butt-ended L (faces flush) -> mitre
+g, o = txcase([((0,150),(1000,150)), ((0,0),(1000,0)), ((1150,0),(1150,-2000)), ((1000,0),(1000,-2000))])
+chk('TX 15b: butt corner (short outer faces) -> clean corner', g == exp15)
+# 16 angled double-line L
+a2 = math.radians(120); u2 = (math.cos(a2), math.sin(a2)); n2 = (-u2[1], u2[0])
+def pt(o, u, t, n, d): return (o[0] + u[0]*t + n[0]*d, o[1] + u[1]*t + n[1]*d)
+# wall A along +x (faces y=0, y=150) ending near origin corner at x=2000; wall B from corner along u2, faces offset 0 and -150 on its normal
+def inter(p, u, q, v):
+    d = u[0]*v[1] - u[1]*v[0]; t = ((q[0]-p[0])*v[1] - (q[1]-p[1])*v[0]) / d; return (p[0]+u[0]*t, p[1]+u[1]*t)
+C = (2000, 0)
+bo = [pt(C, u2, 0, n2, 0), pt(C, u2, 0, n2, -150)]          # B face base points
+xa0 = inter((0,0),(1,0), bo[0], u2); xa1 = inter((0,150),(1,0), bo[1], u2)
+xb0 = inter((0,0),(1,0), bo[1], u2); xb1 = inter((0,150),(1,0), bo[0], u2)
+ang = [((0,0),(2040,0)), ((0,150),(1900,150)), (pt(C,u2,60,n2,0), pt(C,u2,3000,n2,0)), (pt(C,u2,-40,n2,-150), pt(C,u2,3000,n2,-150))]
+fresh(); ens = txl(*ang); o = txrun(ens)
+got = lines0()
+def has_seg(g, a, b, tol=0.01): return any((math.dist(a, r[:2]) < tol and math.dist(b, r[2:]) < tol) or (math.dist(b, r[:2]) < tol and math.dist(a, r[2:]) < tol) for r in g)
+ok16 = len(got) == 4 and sum(1 for r in got if any(math.dist(x, r[:2]) < 0.01 or math.dist(x, r[2:]) < 0.01 for x in (xa0, xa1, xb0, xb1))) == 4
+# every line end at the corner must be shared by exactly two lines (closed mitre)
+ends = [r[:2] for r in got] + [r[2:] for r in got]
+corner_ends = [e for e in ends if math.dist(e, C) < 600]
+ok16 = ok16 and len(corner_ends) == 4 and all(sum(1 for f in corner_ends if math.dist(e, f) < 0.01) == 2 for e in corner_ends)
+chk('TX 16: angled (120 deg) double-line L -> face mitres meet exactly', ok16)
+# 17 different widths 150 meets 100
+dw = [((0,150),(1050,150)), ((0,0),(1050,0)), ((1100,60),(1100,-2000)), ((1000,60),(1000,-2000))]
+g, o = txcase(dw)
+chk('TX 17: 150 pair meets 100 pair -> clean corner', g == exp(((0,150),(1100,150)), ((0,0),(1000,0)), ((1100,150),(1100,-2000)), ((1000,0),(1000,-2000))))
+# 18 double-line T: host y 0..150 continuous, branch x 2000..2150 from below ending at host inner face y=0
+exp18 = exp(((0,150),(5000,150)), ((0,0),(2000,0)), ((2150,0),(5000,0)), ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000)))
+g, o = txcase([((0,150),(5000,150)), ((0,0),(5000,0)), ((2000,-40),(2000,-3000)), ((2150,30),(2150,-3000))])
+chk('TX 18: double-line T -> host outer continuous, inner opened, branch terminated', g == exp18)
+g, o = txcase([((0,150),(5000,150)), ((0,0),(2000,0)), ((2150,0),(5000,0)), ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000))])
+chk('TX 18b: clean double-line T -> no change', g == exp18 and '0 junction' in o)
+# 19 messy double-line T: outer split with small gap, inner pieces short/overshooting, branch faces over/short
+messy = [((0,150),(2500,150)), ((2520,150),(5000,150)),
+         ((0,0),(1960,0)), ((2190,0),(5000,0)),
+         ((2000,120),(2000,-3000)), ((2150,-50),(2150,-3000))]
+g, o = txcase(messy)
+chk('TX 19: messy double-line T -> clean T', g == exp18)
+chk('TX 19: idempotent', idem(messy))
+# 20 wall lines on ordinary layers, zero AKD walls, no registry
+fresh(); A.ev('(setq *wt:reg* nil)'); ens = txl(*dl, layer='WALLS-EXIST'); txrun(ens)
+chk('TX 20: ordinary layer, no AKD data -> repaired, layer preserved', lines0('WALLS-EXIST') == exp15 and not A.db_lines('A-WALL') and not A.db_lines('X-AXIS'))
+# axis lines skipped, unsupported ignored
+fresh(); ens = txl(((0,0),(995,0)), layer='X-AXIS') + txl(((1000,40),(1000,2000)))
+circ = A.ev('(progn (entmake (list (cons 0 "CIRCLE") (cons 8 "0") (cons 10 (list 0.0 0.0 0.0)) (cons 40 5.0))) (entlast))')
+o = txrun(ens + [circ])
+chk('TX: X-AXIS master skipped (untouched), circle ignored', lines0('X-AXIS') == exp(((0,0),(995,0))) and 'X-AXIS master line skipped' in o
+    and 'unsupported object' in o and A.entget(circ) is not None)
+# properties preserved on modify and on T split copies
+fresh(); ens = txl(((0,150),(5000,150)), ((0,0),(5000,0)), ((2000,-40),(2000,-3000)), ((2150,30),(2150,-3000)))
+inner = ens[1]; A.DB[inner].append(A.cons(62, 3)); A.DB[inner].append(A.cons(6, 'HIDDEN'))
+txrun(ens)
+props = [{A.car(x): A.cdr(x) for x in A.DB[e]} for e, a, b in A.db_lines('0') if abs(a[1]) < 1e-6 and abs(b[1]) < 1e-6]
+chk('TX: split host face keeps colour/linetype on both pieces', len(props) == 2 and all(p.get(62) == 3 and p.get(6) == 'HIDDEN' for p in props))
+# undo record restores exactly
+fresh(); ens = txl(*messy); before = lines0(); cap = []
+_orig = A.G[A.Sym('WT:TX-APPLY')]
+def _wrap(*a):
+    r = A.call(_orig, [], []); cap.append(A.G[A.Sym('*WT:PENDING*')]); return r
+A.G[A.Sym('WT:TX-APPLY')] = _wrap
+txrun(ens); changed = lines0() != before
+A.G[A.Sym('WT:TX-APPLY')] = _orig
+A.G[A.Sym('*T-REC*')] = cap[0]; A.ev('(wt:seg-undo *t-rec*)')
+chk('TX: transaction record reverts the whole repair exactly', changed and lines0() == before)
+# --- TX double-line CROSS (+) ---
+def cross_exp(hy, vx, L=3000):
+    (y0, y1), (x0, x1) = hy, vx
+    return exp(((-L,y1),(x0,y1)), ((x1,y1),(L,y1)), ((-L,y0),(x0,y0)), ((x1,y0),(L,y0)),
+               ((x0,-L),(x0,y0)), ((x0,y1),(x0,L)), ((x1,-L),(x1,y0)), ((x1,y1),(x1,L)))
+cont = [((-3000,150),(3000,150)), ((-3000,0),(3000,0)), ((1000,-3000),(1000,3000)), ((1100,-3000),(1100,3000))]
+g, o = txcase(cont)
+exp_c = cross_exp((0,150), (1000,1100))
+chk('TX CROSS 1: four continuous faces (150 x 100) -> clean + opening', g == exp_c and '1 junction' in o)
+chk('TX CROSS 1: second run unchanged (openings not re-merged)', idem(cont))
+clean_c = [((-3000,150),(1000,150)), ((1100,150),(3000,150)), ((-3000,0),(1000,0)), ((1100,0),(3000,0)),
+           ((1000,-3000),(1000,0)), ((1000,150),(1000,3000)), ((1100,-3000),(1100,0)), ((1100,150),(1100,3000))]
+g, o = txcase(clean_c)
+chk('TX CROSS 2: already clean cross -> 0 repairs, not ambiguous', g == exp_c and '0 junction' in o and 'ambiguous' not in o)
+messy_c = [((-3000,150),(3000,150)),                       # outer H continuous
+           ((-3000,0),(980,0)), ((1130,0),(3000,0)),        # inner H split, short on both sides
+           ((1000,-3000),(1000,40)), ((1000,170),(1000,3000)),  # V1 split: overshoots into overlap / stops short
+           ((1100,-3000),(1100,3000)),                      # V2 continuous
+           ((1020,0),(1060,0))]                             # redundant fragment inside overlap
+g, o = txcase(messy_c)
+chk('TX CROSS 3: mixed split/continuous/overshoot/short/fragment -> one clean +', g == exp_c)
+chk('TX CROSS 3: idempotent', idem(messy_c))
+g, o = txcase([((-3000,200),(3000,200)), ((-3000,0),(3000,0)), ((500,-3000),(500,3000)), ((575,-3000),(575,3000))])
+chk('TX CROSS 4: 200 x 75 -> correct four intersections', g == cross_exp((0,200), (500,575)))
+# angled 63 deg
+u = (math.cos(math.radians(63)), math.sin(math.radians(63))); nrm = (-u[1], u[0])
+def along(base, t, d): return (base[0] + u[0]*t + nrm[0]*d, base[1] + u[1]*t + nrm[1]*d)
+C0 = (1000.0, 75.0)
+vf = [(along(C0, -3000, 0), along(C0, 3000, 0)), (along(C0, -3000, -100), along(C0, 3000, -100))]
+ang_c = [((-3000,150),(3000,150)), ((-3000,0),(3000,0))] + vf
+fresh(); ens = txl(*ang_c); o = txrun(ens); got = lines0()
+def xpt(p, d, q, e):
+    den = d[0]*e[1] - d[1]*e[0]; t_ = ((q[0]-p[0])*e[1] - (q[1]-p[1])*e[0]) / den; return (p[0]+d[0]*t_, p[1]+d[1]*t_)
+PX = {(hy, k): xpt((0, hy), (1, 0), vf[k][0], u) for hy in (0, 150) for k in (0, 1)}
+def sx(p): return p[0]
+exp_a = []
+for hy in (0, 150):
+    xs = sorted([PX[(hy,0)], PX[(hy,1)]], key=sx)
+    exp_a += [((-3000,hy), xs[0]), (xs[1], (3000,hy))]
+for k in (0, 1):
+    ys = sorted([PX[(0,k)], PX[(150,k)]], key=lambda p: p[1])
+    exp_a += [(vf[k][0], ys[0]), (ys[1], vf[k][1])]
+ok_a = len(got) == 8 and all(has_seg(got, a, b) for a, b in exp_a)
+chk('TX CROSS 5: 63 deg cross -> parallelogram opening from exact intersections', ok_a)
+chk('TX CROSS 5: idempotent', idem(ang_c))
+# T with small branch overshoot through the host stays T; wall L with both faces overshooting stays L
+g, o = txcase([((0,150),(5000,150)), ((0,0),(5000,0)), ((2000,180),(2000,-3000)), ((2150,180),(2150,-3000))])
+chk('TX CROSS vs T: branch overshooting host by 30 -> existing T result, not cross', g == exp18)
+g, o = txcase([((0,150),(1180,150)), ((0,0),(1180,0)), ((1150,180),(1150,-2000)), ((1000,180),(1000,-2000))])
+chk('TX CROSS vs L: corner with both faces overshooting -> existing L result, not cross', g == exp15)
+# properties preserved on both pieces
+fresh(); ens = txl(*cont); A.DB[ens[1]].append(A.cons(62, 5)); A.DB[ens[1]].append(A.cons(370, 35)); txrun(ens)
+props = [{A.car(x): A.cdr(x) for x in A.DB[e]} for e, a, b in A.db_lines('0') if abs(a[1]) < 1e-6 and abs(b[1]) < 1e-6]
+chk('TX CROSS: split face keeps colour/lineweight on both pieces', len(props) == 2 and all(p_.get(62) == 5 and p_.get(370) == 35 for p_ in props))
+# one long wall crossed by two walls -> two independent crosses
+two = [((-4000,150),(4000,150)), ((-4000,0),(4000,0)), ((-1500,-3000),(-1500,3000)), ((-1400,-3000),(-1400,3000)),
+       ((1500,-3000),(1500,3000)), ((1600,-3000),(1600,3000))]
+g, o = txcase(two)
+chk('TX CROSS: long wall crossed twice -> both openings cut', len(g) == 14 and '2 junction' in o and lk((-1400,0),(1500,0)) in g)
+# three wall families through one node -> ambiguous, unchanged
+d = (math.cos(math.radians(45)), math.sin(math.radians(45)))
+star = cont + [((1050-3000*d[0], 75-3000*d[1]), (1050+3000*d[0], 75+3000*d[1])),
+               ((1050-3000*d[0]+60, 75-3000*d[1]-60), (1050+3000*d[0]+60, 75+3000*d[1]-60))]
+g, o = txcase(star)
+chk('TX CROSS: three wall families at one node -> unchanged, reported ambiguous', g == sorted(lk(a, b) for a, b in star) and 'ambiguous' in o)
+# single-line X untouched
+g, o = txcase(clean_x)
+chk('TX CROSS: single-line clean X still unchanged', g == exp(*clean_x) and '0 junction' in o)
+# --- TX exact-touch double-line T (branch ends exactly on the host near face) ---
+def near_open(g, y, x1, x2): return not any(abs(r[1]-y) < 1e-3 and abs(r[3]-y) < 1e-3 and min(r[0], r[2]) < x1 + 1e-3 and max(r[0], r[2]) > x2 - 1e-3 for r in g)
+et = [((0,150),(5000,150)), ((0,0),(5000,0)), ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000))]
+g, o = txcase(et)
+chk('TX exact-touch T: branch movement 0, near face opened, far face unchanged',
+    g == exp18 and lk((2000,0),(2000,-3000)) in g and lk((2150,0),(2150,-3000)) in g and lk((0,150),(5000,150)) in g and '1 junction' in o)
+fresh(); ens = txl(*et); txrun(ens); first = lines0(); o2 = txrun([e for e, a, b in A.db_lines('0')])
+chk('TX exact-touch T: second run 0 repairs, no duplicates, no extra split', lines0() == first and len(first) == 5 and '0 junction' in o2)
+g, o = txcase([((0,150),(5000,150)), ((0,0),(5000,0)), ((2000,0),(2000,-3000)), ((2100,0),(2100,-3000))])
+chk('TX exact-touch T: host 150 / branch 100', g == exp(((0,150),(5000,150)), ((0,0),(2000,0)), ((2100,0),(5000,0)), ((2000,0),(2000,-3000)), ((2100,0),(2100,-3000))))
+ub = (math.cos(math.radians(63)), math.sin(math.radians(63))); xb2 = 2000 + 100 / ub[1]
+angt = [((0,150),(5000,150)), ((0,0),(5000,0)), ((2000,0),(2000-3000*ub[0],-3000*ub[1])), ((xb2,0),(xb2-3000*ub[0],-3000*ub[1]))]
+fresh(); ens = txl(*angt); o = txrun(ens); got = lines0()
+chk('TX exact-touch T: 63 deg branch -> opening between B1 x Hnear and B2 x Hnear',
+    len(got) == 5 and all(has_seg(got, a, b) for a, b in [((0,0),(2000,0)), ((xb2,0),(5000,0)), ((0,150),(5000,150)), angt[2], angt[3]]))
+tie1 = et + [((2300,-1000),(2300,-100)), ((2450,-1000),(2450,-100))]
+g, o = txcase(tie1)
+chk('TX exact-touch T beside another wall at equal spacing (partner tie) -> both T repaired',
+    g == exp(((0,150),(5000,150)), ((0,0),(2000,0)), ((2150,0),(2300,0)), ((2450,0),(5000,0)), ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000)),
+             ((2300,-1000),(2300,0)), ((2450,-1000),(2450,0))))
+tie2 = et + [((0,-150),(1500,-150))]
+g, o = txcase(tie2)
+chk('TX exact-touch T with a short parallel line beyond the near face (partner tie) -> T repaired, line untouched',
+    g == sorted(exp18 + [lk((0,-150),(1500,-150))]))
+tie3 = [((0,150),(5000,150)), ((0,0),(5000,0)), ((0,-150),(5000,-150)), ((2000,-150),(2000,-3000)), ((2150,-150),(2150,-3000))]
+g, o = txcase(tie3)
+chk('TX genuine tie (three equal parallel lines) stays unpaired -> unchanged', g == exp(*tie3) and '0 junction' in o)
+single_on_face = [((0,150),(5000,150)), ((0,0),(5000,0)), ((2000,0),(2000,-3000))]
+g, o = txcase(single_on_face)
+chk('TX single line ending exactly on a wall face -> unchanged (0 repairs)', g == exp(*single_on_face) and '0 junction' in o)
+# --- TX repair field (window UX) ---
+def _setf(fld): A.G[A.Sym('*T-F*')] = [[float(x), float(y)] for x, y in fld]
+def _cap(src):
+    out = io.StringIO(); A.OUTPUT = True
+    with contextlib.redirect_stdout(out): A.ev(src)
+    A.OUTPUT = False; return out.getvalue()
+def txf(segs, fld, layer='0'):
+    fresh(); txl(*segs, layer=layer); _setf(fld); o = _cap('(wt:tx-field-run *t-f*)'); return lines0(layer), o
+def txf_more(fld, layer='0'):
+    _setf(fld); o = _cap('(wt:tx-field-run *t-f*)'); return lines0(layer), o
+def twg(segs, fld, tol=150.0):
+    fresh(); A.ev('(setq *wt:reg* nil)'); txl(*segs); _setf(fld); o = _cap(f'(wt:tw-run *t-f* {float(tol)})'); return lines0(), o
+FLD_L = field(800, -200, 1300, 300); FLD_T = field(1800, -300, 2400, 300); FLD_X = field(800, -200, 1300, 350)
+g, o = txf(dl, FLD_L)
+chk('TX field: messy double-line L -> same result as selection TX (no cap at the corner)', g == exp15 and 'cap' not in o)
+g, o = txf([((0,150),(5000,150)), ((0,0),(5000,0)), ((2000,-40),(2000,-3000)), ((2150,30),(2150,-3000))], FLD_T)
+chk('TX field: T short/penetrating branch -> same clean T, no branch cap', g == exp18)
+g, o = txf([((0,150),(5000,150)), ((0,0),(5000,0)), ((2000,180),(2000,-3000)), ((2150,180),(2150,-3000))], FLD_T)
+chk('TX field: T overshooting branch -> same clean T', g == exp18)
+g, o = txf(et, FLD_T)
+chk('TX field: exact-touch T -> same clean T', g == exp18)
+g, o = txf(messy, field(1800, -300, 2600, 300))   # window covers the outer-face gap at x=2500
+chk('TX field: messy T -> same clean T', g == exp18)
+g, o = txf(messy_c, FLD_X)
+chk('TX field: messy CROSS -> same clean +, no central caps', g == exp_c)
+g, o = txf(cont, FLD_X)
+chk('TX field: continuous CROSS -> same clean +', g == exp_c)
+g, o = txf(tie1, field(1800, -1200, 2700, 300))
+chk('TX field: exact-touch T with partner tie -> same result', g == exp(((0,150),(5000,150)), ((0,0),(2000,0)), ((2150,0),(2300,0)), ((2450,0),(5000,0)),
+    ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000)), ((2300,-1000),(2300,0)), ((2450,-1000),(2450,0)),
+    ((2300,-1000),(2450,-1000))))   # second branch's free far end lies in the window -> capped
+# distant junction on the same long geometry is untouched
+far2 = [((0,150),(25000,150)), ((0,0),(25000,0)), ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000)),
+        ((20000,0),(20000,-3000)), ((20150,0),(20150,-3000)), ((9000,0),(9400,0))]      # + duplicate fragment far away
+g, o = txf(far2, FLD_T)
+chk('TX field: junction A repaired, junction B and distant duplicate untouched',
+    lk((0,0),(2000,0)) in g and lk((2150,0),(25000,0)) in g and lk((9000,0),(9400,0)) in g and len(g) == 8
+    and lk((20000,0),(20000,-3000)) in g)
+# caps
+wall1 = [((0,150),(3000,150)), ((0,0),(3000,0))]
+FLD_E = field(2800, -100, 3200, 250)
+g, o = txf(wall1, FLD_E)
+chk('TX cap: free wall end in field -> one cap created, other end untouched', g == exp(*wall1, ((3000,0),(3000,150))) and '1 wall end cap' in o)
+g2, o2 = txf_more(FLD_E)
+chk('TX cap: second run -> 0 cap changes, no duplicate', g2 == g and 'cap(s) updated' not in o2 and '0 junction' in o2)
+g, o = txf(wall1 + [((3000,0),(3000,150))], FLD_E)
+chk('TX cap: existing exact cap -> unchanged', g == exp(*wall1, ((3000,0),(3000,150))) and 'cap(s) updated' not in o)
+g, o = txf(wall1 + [((3000,-30),(3000,190))], FLD_E)
+chk('TX cap: oversized cap normalized to the face endpoints', g == exp(*wall1, ((3000,0),(3000,150))))
+g, o = txf(wall1 + [((3000,20),(3000,140))], FLD_E)
+chk('TX cap: undersized cap normalized to the face endpoints', g == exp(*wall1, ((3000,0),(3000,150))))
+g, o = txf(wall1, field(-200, -100, 3200, 250))
+chk('TX cap: whole isolated wall in field -> both ends capped', g == exp(*wall1, ((3000,0),(3000,150)), ((0,0),(0,150))))
+g, o = txf([((0,150),(3000,150)), ((0,0),(2960,0))], FLD_E)
+chk('TX cap: staggered face ends -> no cap (conservative)', g == exp(((0,150),(3000,150)), ((0,0),(2960,0))))
+g, o = txf(clean_c, FLD_X)
+chk('TX cap: clean cross -> no caps, 0 changes', g == exp_c and 'cap' not in o)
+g, o = txf(exp18_segs := [((0,150),(5000,150)), ((0,0),(2000,0)), ((2150,0),(5000,0)), ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000))], FLD_T)
+chk('TX cap: clean T -> no branch cap at the host', g == exp18 and 'cap' not in o)
+g, o = txf([((0,150),(5000,150)), ((0,0),(5000,0)), ((2000,-40),(2000,-3000)), ((2150,-40),(2150,-3000)), ((2000,-40),(2150,-40))], FLD_T)
+chk('TX cap: capped branch end becomes a T -> stale cap erased', g == exp18)
+g, o = txf(dl + [((1080,0),(1080,150))], FLD_L)
+chk('TX cap: capped wall end becomes an L -> stale cap erased', g == exp15)
+g, o = txf([((0,150),(3000,150)), ((0,0),(3000,0)), ((3000,-500),(3000,500))], FLD_E)
+chk('TX cap: wall end against a single boundary line -> no cap, line kept', g == exp(*wall1, ((3000,-500),(3000,500))))
+fresh(); ens = txl(*dl); A.POINTQ[:] = [[800.0, -200.0, 0.0], [1300.0, 300.0, 0.0]]; A.SSFIRST[0] = None
+_cap('(c:TX)')
+chk('TX command: two corners -> field repair', lines0() == exp15)
+
+# --- TW on ordinary double-line walls ---
+FLD_TW = field(1500, -500, 2700, 400)
+g, o = twg([((0,150),(5000,150)), ((0,0),(5000,0)), ((2000,-50),(2000,-3000)), ((2150,-50),(2150,-3000))], FLD_TW)
+chk('TW generic T: branch 50 short -> topology connected, clean T by shared cleanup',
+    g == exp18 and '1 generic wall junction' in o and not A.db_lines('X-AXIS') and A.ev('*wt:reg*') is None)
+g, o = twg([((0,150),(1000,150)), ((0,0),(1000,0)), ((1150,0),(1150,-2000)), ((1000,0),(1000,-2000))], field(700, -300, 1400, 400))
+chk('TW generic L: both walls short of the corner -> same clean L as TX',
+    g == exp(((0,150),(1150,150)), ((0,0),(1000,0)), ((1150,150),(1150,-2000)), ((1000,0),(1000,-2000))) and '1 generic wall junction' in o)
+g, o = twg([((0,150),(2000,150)), ((0,0),(2000,0)), ((2200,150),(4000,150)), ((2200,0),(4000,0))], field(1800, -100, 2400, 250), tol=300.0)
+chk('TW generic collinear: runs 200 apart (tol 300) -> one continuous wall', g == exp(((0,150),(4000,150)), ((0,0),(4000,0))))
+runs = [((0,150),(2000,150)), ((0,0),(2000,0)), ((3000,150),(5000,150)), ((3000,0),(5000,0))]
+g, o = twg(runs, field(1800, -100, 3200, 250), tol=300.0)
+chk('TW generic collinear: gap 1000 > tol -> runs not connected', all(lk(a, b) in g for a, b in runs) and not any(r[0] < 2000 and r[2] > 3000 for r in g))
+g, o = twg(exp18_segs, FLD_TW)
+chk('TW generic: clean T -> 0 repairs, unchanged', g == exp18 and '0 generic wall junction(s) repaired, 0 visible' in o)
+g, o = twg([((0,150),(1150,150)), ((0,0),(1000,0)), ((1150,150),(1150,-2000)), ((1000,0),(1000,-2000))], field(700, -300, 1400, 400))
+chk('TW generic: clean L -> 0 repairs, unchanged', g == exp(((0,150),(1150,150)), ((0,0),(1000,0)), ((1150,150),(1150,-2000)), ((1000,0),(1000,-2000))) and '0 generic' in o)
+amb_tw = [((0,-300),(5000,-300)), ((0,-350),(5000,-350)), ((0,150),(5000,150)), ((0,0),(5000,0)), ((2000,-600),(2000,-3000)), ((2150,-600),(2150,-3000))]
+g, o = twg(amb_tw, field(1500, -800, 2700, 300), tol=800.0)
+chk('TW generic: two plausible hosts -> branch unchanged, ambiguity reported',
+    lk((2000,-600),(2000,-3000)) in g and lk((2150,-600),(2150,-3000)) in g and 'ambiguous' in o)
+fresh(); A.ev('(setq *wt:reg* nil)'); txl(((0,150),(5000,150)), ((0,0),(5000,0)), ((2000,-50),(2000,-3000)), ((2150,-50),(2150,-3000)))
+A.POINTQ[:] = [[1500.0, -500.0, 0.0], [2700.0, 400.0, 0.0]]; _cap('(c:TW)')
+chk('TW command: ordinary double-line walls repaired without AKD data', lines0() == exp18 and not A.db_lines('X-AXIS'))
+# AKD walls in the window: generic path leaves their A-WALL lines alone
+build([wall((0,0),(10000,0)), wall((5000,50),(5000,4000))]); before_akd = geo()
+_setf(field(4000,-1000,6000,1000)); o = _cap('(wt:tw-run *t-f* 150.0)')
+chk('TW AKD: window run still repairs AKD topology, no generic walls reported',
+    mk((5000,0),(5000,4000)) in mset() and lines_match_masters() and 'generic' not in o)
+# PickFirst command
+fresh(); ens = txl(((0,0),(995,0)), ((1000,40),(1000,2000)))
+run_cmd('TX', ens)
+chk('TX PickFirst command: repaired', lines0() == exp(((0,0),(1000,0)), ((1000,0),(1000,2000))))
+c = cfg_run('TX_CONNECT_DISTANCE=-1\nTX_WALL_MAX=400\n'); txcfg = c('TX_CONNECT_DISTANCE') == 150.0 and c('TX_WALL_MAX') == 400.0
+cfg_run(None)
+chk('config: TX_CONNECT_DISTANCE / TX_WALL_MAX optional, invalid -> default', txcfg)
+
+
+# --- TW integration on the centerline base ---
+def twrun(fld, tol=150.0):
+    A.G[A.Sym('*T-F*')] = [[float(x), float(y)] for x, y in fld]
+    return A.ev(f'(wt:tw-run *t-f* {float(tol)})')
+fresh(200, 'LEFT'); add(((0,0),(6000,0))); settings(150, 'RIGHT'); add(((3000,-2000),(3000,-50)))
+twrun(field(2000,-1000,4000,1000))
+chk('TW on centered walls drawn LEFT (host) and RIGHT (branch): gap closed on the host centerline, T split, old-model faces',
+    mk((3075,-2000),(3075,100)) in master_set() and master_offsets_ok() and normalized_ok()
+    and same_lines(walls_now(), expected([wall((0,0),(6000,0),200,'LEFT'), wall((3000,-2000),(3000,0),150,'RIGHT')])))
+def legacy_host():
+    fresh()
+    mkline((0,0),(6000,0),'X-AXIS')
+    for a, b in expected([wall((0,0),(6000,0),200,'LEFT')]): mkline(a, b, 'A-WALL')
+legacy_host()
+leg_lines = geo()[0]
+settings(150, 'CENTER'); add(((3000,-2000),(3000,-40)))                 # AKD branch, 140 short of the true host centre
+A.ev('(setq *wt:reg* nil)'); add(((10000,0),(14000,0))); add(((12000,-2000),(12000,-60)))   # AKD T with a 60 gap
+g_ids = txl(((20000,150),(25000,150)), ((20000,0),(25000,0)), ((22000,-50),(22000,-3000)), ((22150,-50),(22150,-3000)), layer='A-WALL')  # ordinary T, 50 short
+leg_ids = [e for e, a, b in A.db_lines('A-WALL') if a[0] <= 6000 and b[0] <= 6000 and a[1] >= -1 and b[1] >= -1]
+twrun(field(-500,-1000,26000,1000))
+leg_after = sorted((round(a[0],3), round(a[1],3), round(b[0],3), round(b[1],3)) for e, a, b in A.db_lines('A-WALL') if e in leg_ids)
+chk('TW mixed area: AKD T connected, ordinary double-line T connected, legacy off-centre wall left exactly as is',
+    mk((12000,-2000),(12000,0)) in master_set()
+    and any(abs(a[0]-22000) < 1e-3 and abs(max(a[1], b[1])) < 1e-3 and abs(min(a[1], b[1]) + 3000) < 1e-3 for e, a, b in A.db_lines('A-WALL') if e not in leg_ids)
+    and len(leg_after) == len(leg_ids) and all(e in A.DB and e not in A.DELETED for e in leg_ids)
+    and mk((0,0),(6000,0)) in master_set() and mk((3000,-2000),(3000,-40)) in master_set())
+legacy_host(); settings(150, 'CENTER'); add(((3000,-2000),(3000,-40))); A.ev('(setq *wt:reg* nil)')
+before = geo(); twrun(field(2000,-1000,4000,1000)); untouched = geo() == before
+wr(field(-500,-500,6500,500))
+twrun(field(2000,-1000,4000,1000))
+chk('Legacy host: TW leaves it alone before WR; after WR (centred) TW connects the branch to the true centreline',
+    untouched and master_offsets_ok() and normalized_ok() and mk((3000,-2000),(3000,100)) in master_set()
+    and same_lines(walls_now(), expected([wall((0,0),(6000,0),200,'LEFT'), wall((3000,-2000),(3000,0),150)])))
+
+# =========================== WWD (wall to distance) ===========================
+def wwd(e1, q1, e2, q2, d):
+    A.G[A.Sym('*W1*')] = e1; A.G[A.Sym('*W2*')] = e2
+    out = io.StringIO(); A.OUTPUT = False
+    return A.ev(f'(wt:wwd-run *w1* {P(*q1)} *w2* {P(*q2)} {float(d)})')
+def wres(e, q):
+    A.G[A.Sym('*W1*')] = e; return A.ev(f'(wt:wwd-resolve *w1* {P(*q)})')
+def isrec(r): return isinstance(r, list)
+def allg(): return sorted(lines0() + lines0('A-WALL') + lines0('X-AXIS'))
+def aw(a, b): return find_line('A-WALL', a, b)
+ref2 = [((3000,0),(3000,3000)), ((3150,0),(3150,3000))]
+
+# 1 AKD -> AKD, exact picked faces
+build([wall((0,0),(0,3000)), wall((3000,0),(3000,3000))]); keep_ref = find_line('X-AXIS', (3000,0), (3000,3000))
+r = wwd(aw((75,0),(75,3000)), (75,500), aw((2925,0),(2925,3000)), (2925,2500), 1200)
+chk('WWD AKD->AKD: moving RIGHT face 1200 from reference LEFT face, only moving master relocates',
+    isrec(r) and mset() == sorted([mk((1650,0),(1650,3000)), mk((3000,0),(3000,3000))]) and lines_match_masters()
+    and keep_ref not in A.DELETED)
+build([wall((0,0),(0,3000)), wall((3000,0),(3000,3000))])
+r = wwd(aw((-75,0),(-75,3000)), (-75,2800), aw((3075,0),(3075,3000)), (3075,100), 1200)
+chk('WWD AKD->AKD: moving LEFT face / reference RIGHT face (picks at opposite ends) respected',
+    isrec(r) and mk((1950,0),(1950,3000)) in mset() and lines_match_masters())
+build([wall((0,0),(0,3000)), wall((3000,0),(3000,3000))]); before = allg()
+rec = wwd(aw((75,0),(75,3000)), (75,500), aw((2925,0),(2925,3000)), (2925,2500), 1200); moved = allg() != before
+undo_rec(rec)
+chk('WWD AKD: one transaction record restores the exact original drawing', moved and allg() == before)
+# widths 150 / 300, zero, negative, not parallel
+build([wall((0,0),(0,3000)), wall((3000,0),(3000,3000),300)])
+r = wwd(aw((75,0),(75,3000)), (75,500), aw((2850,0),(2850,3000)), (2850,500), 1000)
+chk('WWD widths 150/300: selected face-to-face distance 1000 (not centerline)', isrec(r) and mk((1775,0),(1775,3000)) in mset())
+build([wall((0,0),(0,3000)), wall((3000,0),(3000,3000))])
+r = wwd(aw((75,0),(75,3000)), (75,500), aw((2925,0),(2925,3000)), (2925,500), 0)
+chk('WWD distance 0: selected faces coincide', isrec(r) and mk((2850,0),(2850,3000)) in mset())
+build([wall((0,0),(0,3000)), wall((3000,0),(3000,3000))]); before = allg()
+r = wwd(aw((75,0),(75,3000)), (75,500), aw((2925,0),(2925,3000)), (2925,500), -100)
+chk('WWD negative distance: rejected, no change', isinstance(r, str) and 'zero or greater' in r and allg() == before)
+build([wall((0,0),(0,3000)), wall((1000,4000),(4000,4000))]); before = allg()
+r = wwd(aw((75,0),(75,3000)), (75,500), aw((1000,3925),(4000,3925)), (2000,3925), 1200)
+chk('WWD non-parallel walls: rejected with message, no change', isinstance(r, str) and 'not parallel' in r and allg() == before)
+build([wall((0,0),(3000,0))])
+r = wres(aw((0,-75),(0,75)), (0,10))
+chk('WWD AKD end cap pick: rejected as end cap', isinstance(r, str) and 'end cap' in r)
+build([wall((0,0),(0,3000)), wall((3000,0),(3000,3000))])
+r = wwd(aw((75,0),(75,3000)), (75,500), aw((-75,0),(-75,3000)), (-75,500), 1200)
+chk('WWD AKD same wall for both picks: rejected', isinstance(r, str) and 'different walls' in r)
+
+# 2 GENERIC -> GENERIC (ordinary Layer 0, no AKD data)
+G2 = [((0,0),(0,3000)), ((150,0),(150,3000))] + ref2
+fresh(); ens = txl(*G2); before = lines0()
+r = wwd(ens[1], (150,500), ens[2], (3000,2500), 1200)
+chk('WWD GENERIC->GENERIC: wall translated, reference unchanged, free ends capped, no AKD data',
+    isrec(r) and lines0() == exp(((1650,0),(1650,3000)), ((1800,0),(1800,3000)), ((1650,0),(1800,0)), ((1650,3000),(1800,3000)), *ref2)
+    and not A.db_lines('X-AXIS') and not A.db_lines('A-WALL') and A.ev('*wt:reg*') is None)
+undo_rec(r)
+chk('WWD GENERIC: one transaction record restores the exact original drawing', lines0() == before)
+fresh(); ens = txl(*G2)
+r = wwd(ens[0], (0,2900), ens[3], (3150,100), 1200)
+chk('WWD GENERIC: LEFT/RIGHT picks respected (left face 1200 from reference right face)', isrec(r) and lk((1950,0),(1950,3000)) in lines0() and lk((2100,0),(2100,3000)) in lines0())
+# mixed
+build([wall((0,0),(0,3000))]); ens = txl(*ref2)
+r = wwd(aw((75,0),(75,3000)), (75,500), ens[0], (3000,500), 1200)
+chk('WWD AKD moving -> GENERIC reference (right face 1200 from generic face)', isrec(r) and mset() == [mk((1725,0),(1725,3000))] and lines0() == exp(*ref2))
+build([wall((3075,0),(3075,3000))]); ens = txl(((0,0),(0,3000)), ((150,0),(150,3000)))
+r = wwd(ens[1], (150,500), aw((3000,0),(3000,3000)), (3000,500), 1200)
+chk('WWD GENERIC moving -> AKD reference', isrec(r) and mset() == [mk((3075,0),(3075,3000))] and lk((1650,0),(1650,3000)) in lines0()
+    and lk((1800,0),(1800,3000)) in lines0())
+# rotated 37 deg
+cr, sr = math.cos(math.radians(37)), math.sin(math.radians(37))
+def R(p): return (p[0]*cr - p[1]*sr, p[0]*sr + p[1]*cr)
+fresh(); ens = txl(*[(R(a), R(b)) for a, b in G2])
+r = wwd(ens[1], R((150,500)), ens[2], R((3000,2500)), 1200)
+g = lines0()
+chk('WWD 37 deg generic walls: exact perpendicular face distance, no rotation, no length change',
+    isrec(r) and len(g) == 6 and all(has_seg(g, R(a), R(b)) for a, b in [((1650,0),(1650,3000)), ((1800,0),(1800,3000))] + ref2))
+# generic ambiguity / caps / same wall
+fresh(); ens = txl(((0,0),(3000,0)), ((0,150),(3000,150)), ((0,300),(3000,300)))
+chk('WWD GENERIC ambiguous pairing (three equal lines): refused', 'Ambiguous' in wres(ens[1], (1500,150)))
+fresh(); ens = txl(((0,0),(3000,0)), ((0,150),(3000,150)), ((0,0),(0,150)), ((3000,0),(3000,150)))
+chk('WWD GENERIC end cap pick: rejected as end cap', 'end cap' in wres(ens[3], (3000,75)))
+fresh(); ens = txl(*G2)
+chk('WWD GENERIC same wall for both picks: rejected', 'different walls' in wwd(ens[1], (150,500), ens[0], (0,500), 1200))
+# capped isolated wall moves intact
+fresh(); ens = txl(((0,0),(0,3000)), ((150,0),(150,3000)), ((0,0),(150,0)), ((0,3000),(150,3000)), *ref2)
+r = wwd(ens[1], (150,500), ens[4], (3000,500), 1200)
+chk('WWD capped generic wall: faces and caps move together, nothing left behind',
+    lines0() == exp(((1650,0),(1650,3000)), ((1800,0),(1800,3000)), ((1650,0),(1800,0)), ((1650,3000),(1800,3000)), *ref2))
+
+# topology: T
+refT = [((4000,-3000),(4000,-1000)), ((4150,-3000),(4150,-1000))]
+fresh(); ens = txl(((0,150),(5000,150)), ((0,0),(2000,0)), ((2150,0),(5000,0)), ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000)), *refT)
+r = wwd(ens[4], (2150,-1500), ens[5], (4000,-2000), 1200)
+chk('WWD branch slides along host: old opening closed, new T opened, free branch end capped',
+    lines0() == exp(((0,150),(5000,150)), ((0,0),(2650,0)), ((2800,0),(5000,0)), ((2650,0),(2650,-3000)), ((2800,0),(2800,-3000)),
+                    ((2650,-3000),(2800,-3000)), *refT))
+refH = [((0,3000),(5000,3000)), ((0,3150),(5000,3150))]
+fresh(); ens = txl(((0,150),(5000,150)), ((0,0),(2000,0)), ((2150,0),(5000,0)), ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000)), *refH)
+r = wwd(ens[0], (1000,150), ens[5], (1000,3000), 1200)
+chk('WWD host moved away from T: host faces continuous, branch end capped, host ends capped',
+    lines0() == exp(((0,1800),(5000,1800)), ((0,1650),(5000,1650)), ((0,1650),(0,1800)), ((5000,1650),(5000,1800)),
+                    ((2000,0),(2150,0)), ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000)), *refH))
+refB = [((0,-5000),(5000,-5000)), ((0,-4850),(5000,-4850))]
+fresh(); ens = txl(((0,400),(5000,400)), ((0,550),(5000,550)), ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000)), ((2000,0),(2150,0)), *refB)
+r = wwd(ens[0], (1000,400), ens[6], (1000,-4850), 4850)
+chk('WWD host moved into exact-touch T: near face opened, far face continuous, branch cap removed',
+    lines0() == exp(((0,150),(5000,150)), ((0,0),(2000,0)), ((2150,0),(5000,0)), ((0,0),(0,150)), ((5000,0),(5000,150)),
+                    ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000)), *refB))
+# topology: L
+refV = [((3000,0),(3000,-2000)), ((3150,0),(3150,-2000))]
+fresh(); ens = txl(((0,150),(1150,150)), ((0,0),(1000,0)), ((1150,150),(1150,-2000)), ((1000,0),(1000,-2000)), *refV)
+r = wwd(ens[2], (1150,-1000), ens[4], (3000,-1000), 1350)
+chk('WWD moved away from L: old corner squared and capped, moving wall end squared and capped',
+    lines0() == exp(((0,150),(1150,150)), ((0,0),(1150,0)), ((1150,0),(1150,150)),
+                    ((1650,150),(1650,-2000)), ((1500,150),(1500,-2000)), ((1500,150),(1650,150)), ((1500,-2000),(1650,-2000)), *refV))
+fresh(); ens = txl(((0,150),(1150,150)), ((0,0),(1150,0)), ((1150,0),(1150,150)),
+                   ((1650,150),(1650,-2000)), ((1500,150),(1500,-2000)), ((1500,150),(1650,150)), ((1500,-2000),(1650,-2000)), *refV)
+r = wwd(ens[3], (1650,-1000), ens[7], (3000,-1000), 1850)
+chk('WWD moved into L: stale caps removed, clean mitred L',
+    lines0() == exp(((0,150),(1150,150)), ((0,0),(1000,0)), ((1150,150),(1150,-2000)), ((1000,0),(1000,-2000)),
+                    ((1000,-2000),(1150,-2000)), *refV))
+# topology: CROSS
+refX = [((4000,-3000),(4000,3000)), ((4100,-3000),(4100,3000))]
+fresh(); ens = txl(*clean_c, *refX)
+r = wwd(ens[4], (1000,-1500), ens[8], (4000,-1500), 2500)
+chk('WWD vertical wall moved along a cross: old openings closed, new + cut, free ends capped',
+    lines0() == sorted(cross_exp((0,150), (1500,1600)) + exp(((1500,-3000),(1600,-3000)), ((1500,3000),(1600,3000)), *refX)))
+refY = [((-3000,-5000),(3000,-5000)), ((-3000,-4850),(3000,-4850))]
+fresh(); ens = txl(((-3000,3500),(3000,3500)), ((-3000,3650),(3000,3650)), ((1000,-3000),(1000,3000)), ((1100,-3000),(1100,3000)), *refY)
+r = wwd(ens[0], (-2000,3500), ens[5], (-2000,-4850), 4850)
+chk('WWD wall moved into a cross: four openings cut, moved wall ends capped',
+    lines0() == sorted(cross_exp((0,150), (1000,1100)) + exp(((-3000,0),(-3000,150)), ((3000,0),(3000,150)), *refY)))
+# locality: a distant messy junction on a long wall stays untouched
+fresh(); ens = txl(((0,150),(25000,150)), ((0,0),(25000,0)), ((20000,-40),(20000,-3000)), ((20150,-40),(20150,-3000)),
+                   ((1000,-3000),(1000,-500)), ((1150,-3000),(1150,-500)), ((3000,-3000),(3000,-500)), ((3150,-3000),(3150,-500)))
+r = wwd(ens[5], (1150,-1000), ens[6], (3000,-1000), 1200)
+g = lines0()
+chk('WWD cleanup stays local: distant unrepaired junction untouched',
+    isrec(r) and lk((20000,-40),(20000,-3000)) in g and lk((0,0),(25000,0)) in g and lk((1800,-3000),(1800,-500)) in g)
+# command: prompts, negative distance re-prompt, remembered distance
+fresh(); ens = txl(*G2); A.ev('(setq *wt:wwd-dist* nil)')
+A.ENTSELQ[:] = [[ens[1], [150.0, 500.0, 0.0]], [ens[2], [3000.0, 2500.0, 0.0]]]; A.DISTQ[:] = [-100.0, 1000.0]
+o = _cap('(c:WWD)')
+chk('WWD command: negative re-prompted, wall adjusted, distance remembered',
+    'zero or greater' in o and 'Wall adjusted to 1000' in o and lk((1850,0),(1850,3000)) in lines0() and A.ev('*wt:wwd-dist*') == 1000.0)
+fresh(); ens = txl(*G2); before = lines0()
+A.ENTSELQ[:] = [[ens[1], [150.0, 500.0, 0.0]]]; A.DISTQ[:] = []
+_cap('(c:WWD)')
+chk('WWD command: cancelled at the reference prompt -> drawing unchanged', lines0() == before)
+
+
+# --- WWD on the centerline base ---
+def face_at(pt):
+    return next(e for e, c, d in A.db_lines('A-WALL') if A.ev(f'(wt:on-seg {P(*pt)} {P(*c)} {P(*d)})'))
+ok = True
+for pos, top in (('LEFT', 200.0), ('RIGHT', 0.0)):
+    fresh(200, pos); add(((0,0),(6000,0))); settings(150, 'CENTER'); add(((0,3000),(6000,3000)))
+    em = face_at((3000, top)); er = face_at((3000, 2925))
+    r = wwd(em, (3000.0, top + 0.2), er, (3000.0, 2924.8), 1000.0)
+    want = sorted([mk((0,1825),(6000,1825)), mk((0,3000),(6000,3000))])
+    ok = ok and master_set() == want and master_offsets_ok() \
+         and same_lines(walls_now(), expected([wall((0,1825),(6000,1825),200), wall((0,3000),(6000,3000),150)]))
+chk('WWD on walls drawn LEFT / RIGHT: whole wall moves, 1000 clear, master stays exactly centred (faces at +/- t/2)', ok)
+fresh(150, 'CENTER'); add(((0,0),(6000,0))); add(((3000,0),(3000,3000))); add(((0,5000),(6000,5000)))
+em = face_at((1500, 75)); er = face_at((1500, 4925))
+wwd(em, (1500.0, 75.2), er, (1500.0, 4924.8), 500.0)
+chk('WWD centred-master invariant after moving a wall out of a T: every master midway between its faces',
+    master_offsets_ok() and normalized_ok() and lines_match_masters())
+legacy_host(); settings(150, 'CENTER'); add(((0,3000),(6000,3000))); A.ev('(setq *wt:reg* nil)')
+before = geo()
+el = face_at((3000, 200)); er = face_at((3000, 2925))
+rr = wres(el, (3000.0, 200.2))
+r = wwd(el, (3000.0, 200.2), er, (3000.0, 2924.8), 1000.0)
+chk('WWD on a legacy off-centre wall: refused with "Run WR first", drawing unchanged',
+    isinstance(rr, str) and 'Legacy wall axis detected' in rr and geo() == before)
+wr(field(-500,-500,6500,500))
+el = face_at((3000, 200)); er = face_at((3000, 2925))
+wwd(el, (3000.0, 200.2), er, (3000.0, 2924.8), 1000.0)
+chk('WWD after WR on the former legacy wall: moved, 1000 clear, master centred',
+    mk((0,1825),(6000,1825)) in master_set() and master_offsets_ok()
+    and same_lines(walls_now(), expected([wall((0,1825),(6000,1825),200), wall((0,3000),(6000,3000),150)])))
+
+# =========================== WWE (wall extend) ===========================
+def wwe(e1, q1, e2, q2):
+    A.G[A.Sym('*W1*')] = e1; A.G[A.Sym('*W2*')] = e2
+    return A.ev(f'(wt:wwe-run *w1* {P(*q1)} *w2* {P(*q2)})')
+def okx(r): return isinstance(r, list)
+hostT = [((0,0),(5000,0)), ((0,150),(5000,150))]
+br = [((2000,-3000),(2000,-500)), ((2150,-3000),(2150,-500))]
+# generic T (near face), no AKD data
+fresh(); ens = txl(*hostT, *br)
+r = wwe(ens[3], (2150,-800), ens[0], (1000,0))
+chk('WWE GENERIC T: branch extended to picked near face, clean T, no AKD data',
+    okx(r) and 'extended' in r[1] and abs(r[2] - 500) < 1e-6 and lines0() == exp18[:0] + sorted(exp(*hostT[1:], ((0,0),(2000,0)), ((2150,0),(5000,0)), ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000))))
+    and not A.db_lines('X-AXIS') and not A.db_lines('A-WALL'))
+fresh(); ens = txl(*hostT, *br); before = lines0()
+r = wwe(ens[3], (2150,-800), ens[1], (1000,150))
+chk('WWE GENERIC T: far face picked -> extension distance uses that face, final T still correct',
+    okx(r) and abs(r[2] - 650) < 1e-6 and lines0() == exp(*hostT[1:], ((0,0),(2000,0)), ((2150,0),(5000,0)), ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000))))
+undo_rec(r[0])
+chk('WWE GENERIC: one transaction record restores the original drawing', lines0() == before)
+# opposite end (nearest-end inference)
+hostB = [((0,-4000),(5000,-4000)), ((0,-4150),(5000,-4150))]
+fresh(); ens = txl(*hostT, *br, *hostB)
+r = wwe(ens[3], (2150,-2900), ens[4], (1000,-4000))
+chk('WWE pick near the other end extends that end (top end untouched)',
+    okx(r) and lines0() == exp(*hostT, ((2000,-4000),(2000,-500)), ((2150,-4000),(2150,-500)),
+                               ((0,-4000),(2000,-4000)), ((2150,-4000),(5000,-4000)), hostB[1]))
+# cap pick: selected end is the capped one; old cap erased, other cap unchanged
+fresh(); ens = txl(*hostT, *br, ((2000,-500),(2150,-500)), ((2000,-3000),(2150,-3000)))
+r = wwe(ens[4], (2075,-500), ens[0], (1000,0))
+chk('WWE cap pick: that end extended, its cap erased, opposite cap unchanged',
+    okx(r) and lines0() == exp(*hostT[1:], ((0,0),(2000,0)), ((2150,0),(5000,0)), ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000)),
+                               ((2000,-3000),(2150,-3000))) and ens[5] not in A.DELETED)
+fresh(); ens = txl(*hostT, *br, ((2000,-500),(2150,-500)))
+r = wwe(ens[2], (2000,-700), ens[0], (1000,0))
+chk('WWE side pick at a capped end: old cap does not remain inside the extended wall',
+    okx(r) and not any(r_[1] == -500.0 and r_[3] == -500.0 for r_ in lines0()) and lk((2000,0),(2000,-3000)) in lines0())
+# angled 63 deg branch
+u63 = (math.cos(math.radians(63)), math.sin(math.radians(63))); xb = 2000 + 150 / u63[1]
+def along63(x0, t): return (x0 + u63[0]*t, u63[1]*t)
+brA = [(along63(2000, -3000/u63[1]), along63(2000, -500/u63[1])), (along63(xb, -3000/u63[1]), along63(xb, -500/u63[1]))]
+fresh(); ens = txl(*hostT, *brA)
+r = wwe(ens[2], along63(2000, -800/u63[1]), ens[0], (1000,0))
+g = lines0()
+chk('WWE angled 63 deg: extended, clean angled T',
+    okx(r) and len(g) == 5 and all(has_seg(g, a, b) for a, b in [((0,0),(2000,0)), ((xb,0),(5000,0)), hostT[1],
+                                                                  (brA[0][0], (2000,0)), (brA[1][0], (xb,0))]))
+# L
+tgtV = [((3000,-2000),(3000,150)), ((3150,-2000),(3150,150))]
+fresh(); ens = txl(((0,0),(2500,0)), ((0,150),(2500,150)), *tgtV)
+r = wwe(ens[1], (2400,150), ens[2], (3000,-1000))
+chk('WWE GENERIC L: extended into the corner, existing L miter',
+    okx(r) and lines0() == exp(((0,150),(3150,150)), ((0,0),(3000,0)), ((3150,150),(3150,-2000)), ((3000,0),(3000,-2000))))
+# rejections (no change)
+fresh(); ens = txl(*hostT, *br, *hostB); before = lines0()
+r = wwe(ens[3], (2150,-800), ens[4], (1000,-4000))
+chk('WWE target behind the selected end: rejected, no change', isinstance(r, str) and 'behind' in r and lines0() == before)
+fresh(); ens = txl(*hostT, *br, ((4000,-3000),(4000,0)), ((4150,-3000),(4150,0))); before = lines0()
+r = wwe(ens[3], (2150,-800), ens[4], (4000,-1000))
+chk('WWE parallel target: rejected, no change', isinstance(r, str) and 'parallel' in r and lines0() == before)
+fresh(); ens = txl(((5000,0),(6000,0)), ((5000,150),(6000,150)), *br); before = lines0()
+r = wwe(ens[3], (2150,-800), ens[0], (5500,0))
+chk('WWE target extent not reached: rejected, no change', isinstance(r, str) and 'does not reach' in r and lines0() == before)
+fresh(); ens = txl(*hostT, ((2000,-3000),(2000,100)), ((2150,-3000),(2150,100))); before = lines0()
+r = wwe(ens[3], (2150,-800), ens[0], (1000,0))
+chk('WWE wall already beyond target: rejected, never trimmed', isinstance(r, str) and 'beyond target' in r and lines0() == before)
+fresh(); ens = txl(*hostT, ((2000,-3000),(2000,-500)), ((2150,-3000),(2150,-500)), ((1500,-300),(2600,-300)), ((1500,-250),(2600,-250))); before = lines0()
+r = wwe(ens[3], (2150,-800), ens[0], (1000,0))
+chk('WWE recognised wall in the path: passed through as a clean CROSS (V1 rejected this)',
+    okx(r) and lines0() == exp(hostT[1], ((0,0),(2000,0)), ((2150,0),(5000,0)),
+                               ((1500,-300),(2000,-300)), ((2150,-300),(2600,-300)), ((1500,-250),(2000,-250)), ((2150,-250),(2600,-250)),
+                               ((2000,-3000),(2000,-300)), ((2000,-250),(2000,0)), ((2150,-3000),(2150,-300)), ((2150,-250),(2150,0))))
+fresh(); ens = txl(*hostT, ((2000,-3000),(2000,-500)), ((2150,-3000),(2150,-500)), ((1500,-300),(2600,-300))); before = lines0()
+r = wwe(ens[3], (2150,-800), ens[0], (1000,0))
+chk('WWE unrecognised line in the path: rejected as obstruction, no change', isinstance(r, str) and 'between' in r and lines0() == before)
+hostU = [((0,1000),(5000,1000)), ((0,1150),(5000,1150))]
+fresh(); ens = txl(*hostT, ((2000,-3000),(2000,0)), ((2150,-3000),(2150,0)), *hostU); before = lines0()
+r = wwe(ens[3], (2150,-100), ens[4], (1000,1000))
+chk('WWE end in a messy T: extended through the host -> CROSS, new T at target (V1 rejected this)',
+    okx(r) and lines0() == exp(((0,150),(2000,150)), ((2150,150),(5000,150)), ((0,0),(2000,0)), ((2150,0),(5000,0)),
+                               ((2000,-3000),(2000,0)), ((2000,150),(2000,1000)), ((2150,-3000),(2150,0)), ((2150,150),(2150,1000)),
+                               ((0,1000),(2000,1000)), ((2150,1000),(5000,1000)), ((0,1150),(5000,1150))))
+fresh(); ens = txl(*hostT, *br)
+chk('WWE target on the same wall: rejected', 'different wall' in wwe(ens[3], (2150,-800), ens[2], (2000,-800)))
+fresh(); ens = txl(*hostT, *br, ((2000,-500),(2150,-500)))
+chk('WWE target pick on an end cap: rejected', 'end cap' in wwe(ens[3], (2150,-800), ens[4], (2075,-500)))
+# already reaches
+fresh(); ens = txl(*hostT[1:], ((0,0),(2000,0)), ((2150,0),(5000,0)), ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000))); before = lines0()
+r = wwe(ens[4], (2150,-100), ens[1], (1000,0))
+chk('WWE clean T already reached: no change', okx(r) and 'already reaches target.' in r[1] and lines0() == before)
+fresh(); ens = txl(*hostT, ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000)))
+r = wwe(ens[3], (2150,-100), ens[0], (1000,0))
+chk('WWE messy exact-touch T: no extension, junction repaired',
+    okx(r) and 'junction repaired' in r[1] and abs(r[2]) < 1e-6
+    and lines0() == exp(*hostT[1:], ((0,0),(2000,0)), ((2150,0),(5000,0)), ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000))))
+# locality
+fresh(); ens = txl(((0,0),(25000,0)), ((0,150),(25000,150)), *br, ((20000,-40),(20000,-3000)), ((20150,-40),(20150,-3000)))
+r = wwe(ens[3], (2150,-800), ens[0], (1000,0))
+chk('WWE cleanup local: distant messy junction untouched', okx(r) and lk((20000,-40),(20000,-3000)) in lines0() and lk((2150,0),(25000,0)) in lines0())   # near face stays continuous past the distant branch
+# AKD
+build([wall((0,0),(10000,0)), wall((5000,-3000),(5000,-1000))]); host_m = find_line('X-AXIS', (0,0), (10000,0)); before = allg()
+r = wwe(aw((5075,-3000),(5075,-1000)), (5075,-1100), aw((0,-75),(10000,-75)), (3000,-75))
+chk('WWE AKD T: master end moved to the host master, other end kept, host split at node, clean rebuild',
+    okx(r) and mset() == sorted([mk((0,0),(5000,0)), mk((5000,0),(10000,0)), mk((5000,-3000),(5000,0))]) and lines_match_masters())
+undo_rec(r[0])
+chk('WWE AKD: one transaction record restores masters, linework and host', allg() == before and host_m not in A.DELETED)
+build([wall((0,0),(10000,0),200), wall((5000,-3000),(5000,-1000),100)])
+r = wwe(aw((5050,-3000),(5050,-1000)), (5050,-1100), aw((0,-100),(10000,-100)), (3000,-100))
+chk('WWE AKD widths 100 into 200: widths preserved, branch faces end at host near face',
+    okx(r) and mk((5000,-3000),(5000,0)) in mset() and lk((5050,-3000),(5050,-100)) in lines0('A-WALL') and lk((4950,-3000),(4950,-100)) in lines0('A-WALL'))
+build([wall((0,0),(10000,0)), wall((5000,-3000),(5000,-1000))])
+r = wwe(aw((4925,-3000),(5075,-3000)), (5000,-3000), aw((0,-75),(10000,-75)), (3000,-75))
+chk('WWE AKD cap pick: bottom cap selects the bottom end (target above is behind it)', isinstance(r, str) and 'behind' in r)
+build([wall((0,0),(10000,0)), wall((5000,-3000),(5000,0))]); before = allg()
+r = wwe(aw((5075,-3000),(5075,-75)), (5075,-200), aw((0,-75),(4925,-75)), (3000,-75))
+chk('WWE AKD end already on target master: no change', isinstance(r, str) and 'already reaches' in r and allg() == before)
+build([wall((0,0),(4000,0))]); ens = txl(((5000,-2000),(5000,500)), ((5150,-2000),(5150,500))); before = allg()
+r = wwe(aw((0,75),(4000,75)), (3800,75), ens[0], (5000,-1000))
+chk('WWE AKD moving -> GENERIC target: resolved but mixed junction refused, no change', isinstance(r, str) and 'Mixed' in r and allg() == before)
+build([wall((5075,-2000),(5075,500))]); ens = txl(((0,0),(4000,0)), ((0,150),(4000,150))); before = allg()
+r = wwe(ens[1], (3800,150), aw((5000,-2000),(5000,500)), (5000,-1000))
+chk('WWE GENERIC moving -> AKD target: resolved but mixed junction refused, no change', isinstance(r, str) and 'Mixed' in r and allg() == before)
+# command
+fresh(); ens = txl(*hostT, *br)
+A.ENTSELQ[:] = [[ens[3], [2150.0, -800.0, 0.0]], [ens[0], [1000.0, 0.0, 0.0]]]
+o = _cap('(c:WWE)')
+chk('WWE command: two picks -> Wall extended', 'Wall extended' in o and lk((2000,0),(2000,-3000)) in lines0())
+fresh(); ens = txl(*hostT, *br); before = lines0()
+A.ENTSELQ[:] = [[ens[3], [2150.0, -800.0, 0.0]]]
+_cap('(c:WWE)')
+chk('WWE command: cancelled at target prompt -> drawing unchanged', lines0() == before)
+
+# --- WWE from a connected (L / T) end ---
+def hpieces(y, x0, x1, cuts):
+    xs = [x0] + [c for ab in cuts for c in ab] + [x1]
+    return [((xs[i], y), (xs[i+1], y)) for i in range(0, len(xs), 2)]
+def vpieces(x, y0, y1, cuts):
+    ys = [y0] + [c for ab in cuts for c in ab] + [y1]
+    return [((x, ys[i]), (x, ys[i+1])) for i in range(0, len(ys), 2)]
+tgtC = [((4000,-2000),(4000,2000)), ((4150,-2000),(4150,2000))]
+Lsegs = [((0,150),(1150,150)), ((0,0),(1000,0)), ((1150,150),(1150,-2000)), ((1000,0),(1000,-2000))]
+expLx = exp(((0,150),(4000,150)), ((0,0),(1000,0)), ((1150,0),(4000,0)), ((1150,0),(1150,-2000)), ((1000,0),(1000,-2000)),
+            ((4000,-2000),(4000,0)), ((4000,150),(4000,2000)), tgtC[1])
+fresh(); ens = txl(*Lsegs, *tgtC); before = lines0()
+r = wwe(ens[0], (1100,150), ens[4], (4000,-500))
+chk('WWE L end: moving wall continuous through the old corner, old partner now a clean branch, no miter left, new T at target',
+    okx(r) and abs(r[2] - 2850) < 1e-6 and lines0() == expLx)
+r2 = wwe(ens[0], (3900,150), ens[4], (4000,-500))
+chk('WWE L end: repeat run -> already reaches, no duplicates', okx(r2) and 'already reaches' in r2[1] and lines0() == expLx)
+undo_rec(r2[0]); undo_rec(r[0])
+chk('WWE L end: Undo restores the original L exactly', lines0() == before)
+# T -> CROSS -> new T (clean opened T at the start)
+cleanTup = exp18_segs + [((0,1000),(5000,1000)), ((0,1150),(5000,1150))]
+expTX = exp(((0,150),(2000,150)), ((2150,150),(5000,150)), ((0,0),(2000,0)), ((2150,0),(5000,0)),
+            ((2000,-3000),(2000,0)), ((2000,150),(2000,1000)), ((2150,-3000),(2150,0)), ((2150,150),(2150,1000)),
+            ((0,1000),(2000,1000)), ((2150,1000),(5000,1000)), ((0,1150),(5000,1150)))
+fresh(); ens = txl(*cleanTup); before = lines0()
+r = wwe(ens[4], (2150,-100), ens[5], (1000,1000))
+chk('WWE T end: branch through old host -> clean CROSS (TX solver), new T at target, far faces cut correctly',
+    okx(r) and lines0() == expTX)
+undo_rec(r[0])
+chk('WWE T end: Undo restores the original T exactly', lines0() == before)
+# two intermediate walls
+multi = exp18_segs + [((0,1500),(5000,1500)), ((0,1650),(5000,1650)), ((0,3000),(5000,3000)), ((0,3150),(5000,3150))]
+fresh(); ens = txl(*multi)
+r = wwe(ens[4], (2150,-100), ens[7], (1000,3000))
+cut = [(2000,2150)]
+expM = exp(*hpieces(150,0,5000,cut), *hpieces(0,0,5000,cut), *hpieces(1500,0,5000,cut), *hpieces(1650,0,5000,cut),
+           *hpieces(3000,0,5000,cut), ((0,3150),(5000,3150)),
+           *vpieces(2000,-3000,3000,[(0,150),(1500,1650)]), *vpieces(2150,-3000,3000,[(0,150),(1500,1650)]))
+chk('WWE T end through two walls: old host CROSS, intermediate CROSS, new T', okx(r) and lines0() == expM)
+# widths 100 / 200 / 150
+w_start = [((0,200),(5000,200)), ((0,0),(2000,0)), ((2100,0),(5000,0)), ((2000,0),(2000,-3000)), ((2100,0),(2100,-3000)),
+           ((0,1000),(5000,1000)), ((0,1150),(5000,1150))]
+fresh(); ens = txl(*w_start)
+r = wwe(ens[4], (2100,-100), ens[5], (1000,1000))
+chk('WWE T end with widths 100 / 200 / 150: widths preserved, CROSS + T',
+    okx(r) and lines0() == exp(*hpieces(200,0,5000,[(2000,2100)]), *hpieces(0,0,5000,[(2000,2100)]),
+                               *hpieces(1000,0,5000,[(2000,2100)]), ((0,1150),(5000,1150)),
+                               *vpieces(2000,-3000,1000,[(0,200)]), *vpieces(2100,-3000,1000,[(0,200)])))
+# angled 63 deg T -> CROSS
+u6 = (math.cos(math.radians(63)), math.sin(math.radians(63))); xb6 = 2000 + 150 / u6[1]
+def xa(x0, y): return x0 + y * u6[0] / u6[1]
+angT = [((0,150),(5000,150)), ((0,0),(2000,0)), ((xb6,0),(5000,0)),
+        ((xa(2000,-3000),-3000),(2000,0)), ((xa(xb6,-3000),-3000),(xb6,0)), ((0,1000),(5000,1000)), ((0,1150),(5000,1150))]
+fresh(); ens = txl(*angT)
+r = wwe(ens[3], (xa(2000,-100),-100), ens[5], (1000,1000))
+g = lines0()
+want = [((0,150),(xa(2000,150),150)), ((xa(xb6,150),150),(5000,150)), ((0,0),(2000,0)), ((xb6,0),(5000,0)),
+        ((xa(2000,-3000),-3000),(2000,0)), ((xa(2000,150),150),(xa(2000,1000),1000)),
+        ((xa(xb6,-3000),-3000),(xb6,0)), ((xa(xb6,150),150),(xa(xb6,1000),1000)),
+        ((0,1000),(xa(2000,1000),1000)), ((xa(xb6,1000),1000),(5000,1000)), ((0,1150),(5000,1150))]
+chk('WWE angled 63 deg T end: clean angled CROSS and T', okx(r) and len(g) == 11 and all(has_seg(g, a, b) for a, b in want))
+# refusals from a connected end (no change)
+fresh(); ens = txl(*exp18_segs, ((0,-4000),(5000,-4000)), ((0,-4150),(5000,-4150))); before = lines0()
+r = wwe(ens[4], (2150,-100), ens[5], (1000,-4000))
+chk('WWE connected end, target behind: refused (use EW), no change', isinstance(r, str) and 'behind' in r and lines0() == before)
+diag = [((1000,-1000),(3000,1000)), ((1000+150*2**0.5,-1000),(3000+150*2**0.5,1000))]
+fresh(); ens = txl(*exp18_segs, ((0,1000),(5000,1000)), ((0,1150),(5000,1150)), *diag); before = lines0()
+r = wwe(ens[4], (2150,-100), ens[5], (1000,1000))
+chk('WWE end at a node with two walls: refused before any change', isinstance(r, str) and ('complex' in r or 'between' in r) and lines0() == before)
+fresh(); ens = txl(*exp18_segs, ((0,1000),(5000,1000)), ((0,1150),(5000,1150)), ((1000,500),(3000,500))); before = lines0()
+r = wwe(ens[4], (2150,-100), ens[5], (1000,1000))
+chk('WWE connected end, unrelated line across the corridor: refused, no change', isinstance(r, str) and 'between' in r and lines0() == before)
+fresh(); ens = txl(*exp18_segs, ((0,250),(5000,250)), ((0,400),(5000,400))); before = lines0()
+r = wwe(ens[4], (2150,-100), ens[5], (1000,250))
+chk('WWE connected end, target wall right behind the old host: refused, no change', isinstance(r, str) and lines0() == before)
+build([wall((0,0),(10000,0)), wall((5000,-3000),(5000,0)), wall((0,200),(10000,200))]); before = allg()
+r = wwe(aw((5075,-3000),(5075,-75)), (5075,-200), aw((0,125),(10000,125)), (3000,125))
+chk('WWE AKD T end, target closer than D past the old host: refused as too close, no change', isinstance(r, str) and 'too close' in r and allg() == before)
+fresh(); ens = txl(((0,0),(3000,0)), ((0,150),(3000,150)), ((3000,0),(5000,0)), ((3000,150),(5000,150)),
+                   ((6000,-2000),(6000,2000)), ((6150,-2000),(6150,2000)))
+# collinear continuation: first run pairs 0..3000 with 3000..5000 as one wall (touching faces merge) -> plain extension
+r = wwe(ens[3], (4900,150), ens[4], (6000,0))
+chk('WWE collinear touching runs behave as one wall (extended as a whole, joint outside cleanup untouched)', okx(r) and lk((3000,0),(6000,0)) in lines0() and lk((0,0),(3000,0)) in lines0() and lk((6000,-2000),(6000,0)) in lines0())
+# locality with a connected end
+fresh(); ens = txl(((0,150),(25000,150)), ((0,0),(2000,0)), ((2150,0),(25000,0)), ((2000,0),(2000,-3000)), ((2150,0),(2150,-3000)),
+                   ((20000,-40),(20000,-3000)), ((20150,-40),(20150,-3000)),
+                   ((0,1000),(25000,1000)), ((0,1150),(25000,1150)), ((21000,1110),(21000,3000)), ((21150,1110),(21150,3000)))
+r = wwe(ens[4], (2150,-100), ens[7], (1000,1000))
+g = lines0()
+chk('WWE connected end: only old node, corridor and target change; distant junctions untouched',
+    okx(r) and lk((20000,-40),(20000,-3000)) in g and lk((21000,1110),(21000,3000)) in g and lk((2150,1150),(2150,1150)) not in g
+    and lk((0,1150),(25000,1150)) in g and lk((2150,1000),(25000,1000)) in g)
+# AKD connected ends
+build([wall((0,0),(1000,0)), wall((1000,0),(1000,-2000)), wall((4000,-2000),(4000,2000))]); before = allg()
+a_m = find_line('X-AXIS', (0,0), (1000,0))
+r = wwe(aw((0,75),(1075,75)), (900,75), aw((3925,-2000),(3925,2000)), (3925,-500))
+chk('WWE AKD L end: master end extended (other end fixed), split at old corner, T at target, clean rebuild',
+    okx(r) and mset() == sorted([mk((0,0),(1000,0)), mk((1000,0),(4000,0)), mk((1000,0),(1000,-2000)),
+                                 mk((4000,-2000),(4000,0)), mk((4000,0),(4000,2000))]) and lines_match_masters())
+undo_rec(r[0])
+chk('WWE AKD L end: Undo restores masters (same entity) and linework', allg() == before and a_m not in A.DELETED)
+build([wall((0,0),(10000,0)), wall((5000,-3000),(5000,0)), wall((0,2000),(10000,2000))]); before = allg()
+r = wwe(aw((5075,-3000),(5075,-75)), (5075,-200), aw((0,1925),(10000,1925)), (3000,1925))
+chk('WWE AKD T end: through the host (CROSS) to a new T, widths kept',
+    okx(r) and mset() == sorted([mk((0,0),(5000,0)), mk((5000,0),(10000,0)), mk((5000,-3000),(5000,0)), mk((5000,0),(5000,2000)),
+                                 mk((0,2000),(5000,2000)), mk((5000,2000),(10000,2000))]) and lines_match_masters())
+undo_rec(r[0])
+chk('WWE AKD T end: Undo restores the original network', allg() == before)
+build([wall((0,0),(10000,0)), wall((5000,-3000),(5000,0)), wall((0,1000),(10000,1000)), wall((0,2000),(10000,2000))])
+r = wwe(aw((5075,-3000),(5075,-75)), (5075,-200), aw((0,1925),(10000,1925)), (3000,1925))
+chk('WWE AKD T end through an intermediate wall: two CROSSes and a T', okx(r) and mk((5000,1000),(5000,2000)) in mset() and lines_match_masters())
+build([wall((0,0),(10000,0)), wall((5000,-3000),(5000,0)), wall((0,2000),(10000,2000))]); mkline((4000,1000), (6000,1000), 'X-AXIS'); before = allg()
+r = wwe(aw((5075,-3000),(5075,-75)), (5075,-200), aw((0,1925),(10000,1925)), (3000,1925))
+chk('WWE AKD: plain axis across the path: refused, no change', isinstance(r, str) and ('between' in r or 'too close' in r) and allg() == before)
+build([wall((0,0),(10000,0)), wall((5000,-3000),(5000,0)), wall((0,2000),(10000,2000))]); txl(((4000,1000),(6000,1000))); before = allg()
+r = wwe(aw((5075,-3000),(5075,-75)), (5075,-200), aw((0,1925),(10000,1925)), (3000,1925))
+chk('WWE AKD: ordinary line across the path: refused as mixed, no change', isinstance(r, str) and 'Mixed' in r and allg() == before)
+
+# --- WWE on the centerline base ---
+ok = True
+for pos, cx, qx in (('LEFT', -75, 0.2), ('RIGHT', 75, -0.2)):
+    fresh(150, pos); add(((0,0),(0,2000))); settings(200, 'CENTER'); add(((-3000,4000),(3000,4000)))
+    em = face_at((0, 1800)); et = face_at((1000, 3900))
+    r = wwe(em, (qx, 1800.0), et, (1000.0, 3899.8))
+    ok = ok and okx(r) and mk((cx,0),(cx,4000)) in master_set() and master_offsets_ok() and normalized_ok() \
+         and same_lines(walls_now(), expected([wall((0,0),(0,4000),150,pos), wall((-3000,4000),(3000,4000),200)]))
+chk('WWE on walls drawn LEFT / RIGHT: centreline end extended to the target centreline, master centred, old-model faces', ok)
+legacy_host(); settings(150, 'CENTER'); add(((8000,-3000),(8000,3000))); A.ev('(setq *wt:reg* nil)')
+before = geo()
+r1 = wwe(face_at((5500, 200)), (5500.0, 200.2), face_at((7925, 1000)), (7924.8, 1000.0))
+same1 = geo() == before
+fresh(); settings(150, 'CENTER'); add(((3000,-3000),(3000,-1000)))
+mkline((0,0),(6000,0),'X-AXIS')
+for a_, b_ in expected([wall((0,0),(6000,0),200,'LEFT')]): mkline(a_, b_, 'A-WALL')
+A.ev('(setq *wt:reg* nil)'); before2 = geo()
+r2 = wwe(face_at((3075, -1200)), (3075.2, -1200.0), face_at((1000, 0)), (1000.0, -0.2))
+chk('WWE with a legacy off-centre wall as the moving wall or the target: refused ("Run WR first"), drawing unchanged',
+    isinstance(r1, str) and 'Legacy wall axis detected' in r1 and same1
+    and isinstance(r2, str) and 'Legacy wall axis detected' in r2 and geo() == before2)
+legacy_host(); settings(150, 'CENTER'); add(((8000,-3000),(8000,3000))); A.ev('(setq *wt:reg* nil)')
+wr(field(-500,-500,6500,500))
+r = wwe(face_at((5500, 200)), (5500.0, 200.2), face_at((7925, 1000)), (7924.8, 1000.0))
+chk('WWE after WR on the former legacy wall: extended to the target centreline, master centred, T split',
+    okx(r) and mk((0,100),(8000,100)) in master_set() and master_offsets_ok() and normalized_ok()
+    and same_lines(walls_now(), expected([wall((0,100),(8000,100),200), wall((8000,-3000),(8000,3000),150)])))
+
+# --- TX protects AKD wall geometry (integration) ---
+build([wall((0,0),(6000,0))]); add(((3000,0),(3000,3000))); akd_before = geo()
+akd_ids = [e for e, a, b in walls_now()] + [e for e, a, b in masters_now()]
+g1 = mkline((0,5000),(2950,5000),'A-WALL'); g2 = mkline((3000,5050),(3000,7000),'A-WALL')     # ordinary lines on A-WALL, near-L
+g3 = mkline((8000,0),(10000,0),'0'); g4 = mkline((10050,50),(10050,2000),'0')                  # ordinary lines elsewhere
+A.SSFIRST[0] = akd_ids + [g1, g2, g3, g4]
+out = io.StringIO(); A.OUTPUT = True
+with contextlib.redirect_stdout(out): A.ev('(c:TX)')
+A.OUTPUT = False
+lines_g = [(a, b) for e, a, b in A.db_lines('A-WALL') + A.db_lines('0') if e not in akd_ids]
+chk('TX selection over AKD walls: masters, faces and caps untouched; ordinary A-WALL and layer-0 lines still repaired',
+    geo() [1] == akd_before[1] and all(e in A.DB and e not in A.DELETED for e in akd_ids)
+    and sorted((round(a[0],3), round(a[1],3), round(b[0],3), round(b[1],3)) for e, a, b in walls_now() if e in akd_ids) == akd_before[0]
+    and any(near(p, (3000,5000)) for a, b in lines_g for p in (a, b))
+    and any(near(p, (10050,0)) for a, b in lines_g for p in (a, b))
+    and 'AKD wall line(s) left to the wall tools' in out.getvalue())
+build([wall((0,0),(6000,0))]); add(((3000,0),(3000,3000))); akd_before = geo()
+A.POINTQ[:] = [[-1000.0, -1000.0, 0.0], [7000.0, 4000.0, 0.0]]
+A.ev('(c:TX)')
+chk('TX window over AKD walls: nothing changed', geo() == akd_before)
+legacy_fix = [wall((0,0),(6000,0),200,'LEFT')]
+fresh()
+for a, b, th, pos in legacy_fix: mkline(a, b, 'X-AXIS')
+for a, b in expected(legacy_fix): mkline(a, b, 'A-WALL')
+before = geo()
+A.POINTQ[:] = [[-1000.0, -1000.0, 0.0], [7000.0, 1000.0, 0.0]]
+A.ev('(c:TX)')
+chk('TX window over a legacy off-centre wall: its faces and caps are protected (left to WR)', geo() == before)
+
 # Position submenu keys (shared by WW and XW)
 res = []
 for key, want in (('Q', 'LEFT'), ('W', 'CENTER'), ('E', 'RIGHT'), ('Left', 'LEFT'), ('Right', 'RIGHT'), ('Center', 'CENTER')):

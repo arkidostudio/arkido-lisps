@@ -1,5 +1,5 @@
 ;;; WallTool.lsp -- AKD WallTool v0.1.0 (Stage 1: 2D Wall Core)
-;;; Commands: AX (axis), ZXW (grid axis), WW (wall), XW (axis to wall), EW (erase wall), WWF (wall from wall), TW (connection repair), WR (wall/axis repair)
+;;; Commands: AX (axis), ZXW (grid axis), WW (wall), XW (axis to wall), EW (erase wall), WWF (wall from wall), WWD (wall to distance), WWE (wall extend), TW (connection repair), TX (line junction cleanup), WR (wall/axis repair)
 ;;; Plain AutoLISP + DCL only (no VL/VLA/VLAX, no XData). AutoCAD Mac + Windows.
 ;;;
 ;;; Model:  MASTER AXIS -> THICKNESS + POSITION -> THEORETICAL STRIP
@@ -153,7 +153,8 @@
     (cons "GRID_LAYER" "X-GRID") (cons "GRID_COLOR" 8) (cons "GRID_LINETYPE" "CONTINUOUS") (cons "GRID_PLOT" 1)
     (cons "WALL_LAYER" "A-WALL") (cons "WALL_COLOR" 7) (cons "WALL_LINETYPE" "CONTINUOUS") (cons "WALL_PLOT" 1)
     (cons "BUBBLE_DIAMETER" 800.0) (cons "BUBBLE_OFFSET" 500.0) (cons "TEXT_HEIGHT" 350.0)
-    (cons "DEFAULT_OFFSET" 1500.0) (cons "TW_CONNECT_DISTANCE" 150.0)))
+    (cons "DEFAULT_OFFSET" 1500.0) (cons "TW_CONNECT_DISTANCE" 150.0)
+    (cons "TX_CONNECT_DISTANCE" 150.0) (cons "TX_WALL_MAX" 600.0)))
 
 (setq *wt:cfg* nil)
 
@@ -277,7 +278,7 @@
 
 (defun wt:error (msg)
   (if *wt:pending* (wt:seg-undo *wt:pending*))
-  (setq *wt:pending* nil)
+  (setq *wt:pending* nil *wt:tx-field* nil *wt:tx-nested* nil)
   (if (not (wcmatch (strcase msg) "*CANCEL*,*QUIT*,*EXIT*,*BREAK*"))
     (princ (strcat "\nError: " msg)))
   (wt:end))
@@ -1391,7 +1392,7 @@
   (wt:end))
 
 ;;; ===================================================================
-;;; 18. TW -- wall repair in a field (repairs the MASTER network, then wt:rebuild)
+;;; 18. TW -- wall repair in a field: AKD masters (then wt:rebuild) + ordinary double-line walls (TX cleanup)
 ;;; ===================================================================
 
 ;; field = 4 WCS corners of the picked UCS rectangle
@@ -1533,7 +1534,7 @@
   r)
 
 ;; Repair walls in field. Returns the transaction record, or nil if no walls.
-(defun wt:tw-repair (field tol / net walls w r moves stubs amb nodes keepws stubws n rec)
+(defun wt:tw-repair (field tol / net walls w r moves stubs amb nodes keepws stubws n rec lw)
   (setq net (wt:net-scan))
   (foreach m (car net)
     (if (and (wt:tw-seg-near-field (cadr m) (caddr m) field tol)
@@ -1554,10 +1555,11 @@
         (setq n (1+ n)))
       ;; stale A-WALL pieces beside the walls being rebuilt that no recognised wall
       ;; claims any more (e.g. faces/caps left where a moved master used to be)
-      (setq net (wt:net-scan))
+      (setq net (wt:net-scan) lw (wt:legacy-walls net))   ; legacy walls are WR's job
       (foreach f (cadr net)
         (if (and (not (wt:any-owned f walls))
                  (not (wt:face-owners f net))
+                 (not (wt:any-owned f lw))
                  (wt:tw-near-master-p f walls))
           (wt:pend-erase (car f))))
       (wt:rebuild (reverse keepws) stubws)
@@ -1568,6 +1570,197 @@
                      (if (> amb 0) (strcat " " (itoa amb) " ambiguous connection(s) skipped.") "")))
       rec)))
 
+(setq *wt:tw-net* nil)
+
+;; any AKD wall (registered or reconstructable master) near the field
+(defun wt:tw-akd-present (field tol / net r)
+  (setq net (wt:net-scan))
+  (foreach m (car net)
+    (if (and (not r) (wt:tw-seg-near-field (cadr m) (caddr m) field tol) (wt:wall-for-repair m (cadr net)))
+      (setq r t)))
+  r)
+
+;; collection filter: A-WALL lines owned by an AKD wall stay with the AKD path
+(defun wt:tw-akd-line-p (e d a b)
+  (and (= (strcase (cdr (assoc 8 d))) (strcase (wt:cfg "WALL_LAYER")))
+       (wt:face-owners (list e a b) *wt:tw-net*)))
+
+;; mutual-pair components of *wt:tx-segs* -> generic wall records
+(defun wt:tw-gen-walls (/ seen comp queue x recs ref u o2 lo hi s1 s2 ok iv off rec base)
+  (foreach s *wt:tx-segs*
+    (if (and (not (member (car s) seen)) (wt:tx-paired-p (car s)))
+      (progn
+        (setq comp (list (car s)) queue (list (car s)) seen (cons (car s) seen))
+        (while queue
+          (setq x (car queue) queue (cdr queue))
+          (foreach j (cdr (assoc x *wt:tx-ptab*))
+            (if (and (not (member j seen)) (wt:tx-pairp x j))
+              (setq comp (cons j comp) queue (append queue (list j)) seen (cons j seen)))))
+        (setq comp (wt:sort comp '<) ref (wt:tx-seg (car comp)) u (wt:tx-u ref)
+              o2 nil s1 nil s2 nil lo nil hi nil ok t)
+        (foreach id comp
+          (setq off (wt:tx-off (cadr (wt:tx-seg id)) ref) iv (wt:tx-iv (wt:tx-seg id) ref))
+          (if (or (not lo) (< (car iv) lo)) (setq lo (car iv)))
+          (if (or (not hi) (> (cadr iv) hi)) (setq hi (cadr iv)))
+          (cond ((<= (abs off) *wt:tx-tol-col*) (setq s1 (cons id s1)))
+                ((not o2) (setq o2 off s2 (cons id s2)))
+                ((<= (abs (- off o2)) *wt:tx-tol-col*) (setq s2 (cons id s2)))
+                (t (setq ok nil))))
+        (if (and ok o2)
+          (progn
+            (setq base (wt:v+ (cadr ref) (wt:v* (wt:perp u) (/ o2 2.0)))
+                  rec (list comp (wt:v+ base (wt:v* u lo)) (wt:v+ base (wt:v* u hi)) (abs o2) "CENTER"
+                            (reverse s1) (reverse s2) (car ref) o2 lo hi))
+            (wt:dbg (list "TW GENERIC WALL faces" (reverse s1) "/" (reverse s2) "width" (wt:fmt (abs o2))
+                          "inferred centerline" (cadr rec) "->" (caddr rec) "source GENERIC"))
+            (setq recs (cons rec recs)))
+          (wt:dbg (list "TW GENERIC faces" comp "not a consistent two-face wall, ignored"))))))
+  (reverse recs))
+
+(defun wt:tw-rec-u (r) (wt:unit (wt:v- (caddr r) (cadr r))))
+
+;; p inside record r's wall strip (faces + extent, tol-col margin)
+(defun wt:tw-in-strip (p r / ref st off)
+  (setq ref (wt:tx-seg (nth 7 r)) st (wt:tx-sta p ref) off (wt:tx-off p ref))
+  (and (>= st (- (nth 9 r) *wt:tx-tol-col*)) (<= st (+ (nth 10 r) *wt:tx-tol-col*))
+       (>= off (- (min 0.0 (nth 8 r)) *wt:tx-tol-col*)) (<= off (+ (max 0.0 (nth 8 r)) *wt:tx-tol-col*))))
+
+;; records -> TW wall list (id p1 p2 width pos). An axis end already inside another
+;; wall's strip is connected: it is snapped (in memory) onto that wall's axis so the
+;; AKD topology rules see a touching end and leave it to TX's visible cleanup.
+(defun wt:tw-snap-ends (recs / out p q x ends)
+  (foreach r recs
+    (setq ends nil)
+    (foreach side '(0 1)
+      (setq p (if (= side 0) (cadr r) (caddr r)) q p)
+      (foreach o recs
+        (if (and (not (eq o r)) (wt:peq q p)
+                 (>= (abs (wt:cross (wt:tw-rec-u r) (wt:tw-rec-u o))) *wt:tx-min-sin*)
+                 (wt:tw-in-strip p o)
+                 (setq x (wt:xline p (wt:tw-rec-u r) (cadr o) (wt:tw-rec-u o))))
+          (setq q x)))
+      (setq ends (cons q ends)))
+    (setq ends (reverse ends))
+    (setq out (cons (list (car r) (car ends) (cadr ends) (cadddr r) "CENTER") out)))
+  (reverse out))
+
+;; collinear runs: parallel, same width, same axis line, facing free ends, gap in (tol, maxgap]
+;; with its midpoint in the field. -> ((i si j sj gap) ...)
+(defun wt:tw-gen-collinear (recs walls field maxgap / out i j ri rj ui uj pe qe oi oj g)
+  (setq i 0)
+  (foreach ri recs
+    (setq j 0)
+    (foreach rj recs
+      (if (> j i)
+        (progn
+          (setq ui (wt:tw-rec-u ri) uj (wt:tw-rec-u rj))
+          (if (and (< (abs (wt:cross ui uj)) *wt:tx-tol-par*)
+                   (<= (abs (- (cadddr ri) (cadddr rj))) *wt:tx-tol-col*)
+                   (<= (abs (wt:cross ui (wt:v- (cadr rj) (cadr ri)))) *wt:tx-tol-col*))
+            (foreach si '(0 1)
+              (foreach sj '(0 1)
+                (setq pe (wt:tw-end-pt (nth i walls) si) qe (wt:tw-end-pt (nth j walls) sj)
+                      oi (if (= si 1) ui (wt:v* ui -1.0)) oj (if (= sj 1) uj (wt:v* uj -1.0))
+                      g (wt:dot (wt:v- qe pe) oi))
+                (if (and (< (wt:dot oi oj) 0.0) (> g *wt:tol*) (<= g maxgap)
+                         (= (wt:tw-touch-count pe i walls) 0) (= (wt:tw-touch-count qe j walls) 0)
+                         (wt:pip (wt:v* (wt:v+ pe qe) 0.5) field))
+                  (setq out (cons (list i si j sj g) out))))))))
+      (setq j (1+ j)))
+    (setq i (1+ i)))
+  (reverse out))
+
+;; move every face of record rec at end side by d along the wall (entities, recorded)
+(defun wt:tw-gen-move (rec side d / u o best bk bp dd p)
+  (setq u (wt:tw-rec-u rec) o (if (= side 1) u (wt:v* u -1.0)))
+  (foreach grp (list (nth 5 rec) (nth 6 rec))
+    (setq best nil)
+    (foreach id grp
+      (foreach en (cadddr (wt:tx-seg id))
+        (setq dd (entget en))
+        (foreach k '(10 11)
+          (setq p (wt:pt2 (cdr (assoc k dd))))
+          (if (or (not best) (> (wt:dot p o) (+ (wt:dot best o) *wt:tol*)))
+            (setq best p bk k bp en)))))
+    (if best
+      (progn
+        (setq dd (entget bp) p (cdr (assoc bk dd)))
+        (wt:pend-modify (subst (cons bk (list (+ (car p) (* d (car o))) (+ (cadr p) (* d (cadr o)))
+                                              (if (caddr p) (caddr p) 0.0)))
+                               (assoc bk dd) dd))))))
+
+(defun wt:tw-count (k keys / n) (setq n 0) (foreach x keys (if (equal x k) (setq n (1+ n)))) n)
+(defun wt:tw-move-at (wi side moves / r)
+  (foreach m moves (if (and (= (car m) wi) (= (cadr m) side)) (setq r t))) r)
+(defun wt:tw-pt-member (x pts / r) (foreach p pts (if (wt:peq x p) (setq r t))) r)
+(defun wt:tw-shared-pt (mv moves / r)
+  (foreach m moves (if (and (/= (car m) (car mv)) (wt:peq (caddr m) (caddr mv))) (setq r t))) r)
+
+;; Topology repair of ordinary double-line walls in the field (records into *wt:pending*).
+;; Returns (junctions ambiguous generic-wall-count).
+(defun wt:tw-generic (field tol / ens recs walls r moves amb col keys bad drop acc n x d w pts)
+  (setq *wt:tx-field* nil n 0 amb 0
+        ens (wt:tx-collect field (+ tol (wt:cfg "TX_WALL_MAX")) 'wt:tw-akd-line-p))
+  (if ens (progn (wt:tx-prepare ens *wt:tol*) (setq recs (wt:tw-gen-walls))))
+  (if recs
+    (progn
+      (setq walls (wt:tw-snap-ends recs)
+            r (wt:tw-candidates walls field tol) moves (car r) amb (caddr r)
+            col (wt:tw-gen-collinear recs walls field tol))
+      (foreach c col (setq keys (cons (list (car c) (cadr c)) (cons (list (caddr c) (cadddr c)) keys))))
+      ;; a continuation must be unique and not compete with an L/T connection of the same end
+      (foreach c col
+        (if (or (/= (wt:tw-count (list (car c) (cadr c)) keys) 1)
+                (/= (wt:tw-count (list (caddr c) (cadddr c)) keys) 1)
+                (wt:tw-move-at (car c) (cadr c) moves) (wt:tw-move-at (caddr c) (cadddr c) moves))
+          (progn
+            (setq bad (cons c bad) amb (1+ amb))
+            (wt:dbg (list "TW TOPOLOGY collinear walls" (car (nth (car c) recs)) (car (nth (caddr c) recs))
+                          "classification COLLINEAR accepted NO (ambiguous)")))))
+      (foreach mv moves (if (member (list (car mv) (cadr mv)) keys) (setq drop (cons (caddr mv) drop))))
+      (foreach mv moves (if (not (wt:tw-pt-member (caddr mv) drop)) (setq acc (cons mv acc))))
+      (setq acc (reverse acc))
+      (foreach mv acc
+        (setq w (nth (car mv) walls) x (caddr mv)
+              d (wt:dot (wt:v- x (wt:tw-end-pt w (cadr mv))) (wt:tw-end-dir w (cadr mv))))
+        (if (not (wt:tw-pt-member x pts)) (setq pts (cons x pts) n (1+ n)))
+        (wt:dbg (list "TW TOPOLOGY wall" (car (nth (car mv) recs)) "end P" (1+ (cadr mv))
+                      "classification" (if (wt:tw-shared-pt mv acc) "L" "T")
+                      "axis intersection" x "required movement" (wt:fmt (abs d)) "accepted YES"))
+        (wt:tw-gen-move (nth (car mv) recs) (cadr mv) d))
+      (foreach c col
+        (if (not (member c bad))
+          (progn
+            (wt:dbg (list "TW TOPOLOGY collinear walls" (car (nth (car c) recs)) (car (nth (caddr c) recs))
+                          "classification COLLINEAR gap" (wt:fmt (nth 4 c)) "accepted YES"))
+            (wt:tw-gen-move (nth (car c) recs) (cadr c) (/ (nth 4 c) 2.0))
+            (wt:tw-gen-move (nth (caddr c) recs) (cadddr c) (/ (nth 4 c) 2.0))
+            (setq n (1+ n)))))))
+  (setq *wt:tx-segs* nil *wt:tx-ptab* nil)
+  (list n amb (length recs)))
+
+;; TW: AKD walls (authoritative masters, unchanged path), then ordinary double-line
+;; walls, then the shared TX visible cleanup inside the field. One undo group.
+(defun wt:tw-run (field tol / akd g cl)
+  (setq *wt:tx-field* nil *wt:tx-nested* nil cl 0)
+  (if (setq akd (wt:tw-akd-present field tol)) (wt:tw-repair field tol))
+  (setq *wt:tw-net* (wt:net-scan))
+  (wt:pend-begin)
+  (setq *wt:tx-nested* t g (wt:tw-generic field tol))
+  (if (> (caddr g) 0)
+    (progn
+      (setq *wt:tx-field* field
+            cl (wt:tx-collect field (+ (wt:cfg "TX_CONNECT_DISTANCE") (wt:cfg "TX_WALL_MAX")) 'wt:tw-akd-line-p)
+            cl (if cl (wt:tx-run cl) 0))))
+  (setq *wt:tx-nested* nil *wt:tx-field* nil *wt:pending* nil *wt:tw-net* nil)
+  (cond
+    ((> (caddr g) 0)
+     (princ (strcat "\nTW: " (itoa (car g)) " generic wall junction(s) repaired, "
+                    (itoa cl) " visible junction(s) cleaned."
+                    (if (> (cadr g) 0) (strcat " " (itoa (cadr g)) " ambiguous connection(s) skipped.") ""))))
+    ((not akd) (princ "\nTW: No walls found in the repair area.")))
+  g)
+
 (defun c:TW (/ *error* c1 c2)
   (setq *error* wt:error)
   (wt:begin)
@@ -1577,7 +1770,7 @@
            (setq c2 (getcorner c1 "\nSpecify opposite corner: ")))
     (progn
       (princ "\nRepairing wall network...")
-      (wt:tw-repair (wt:tw-field c1 c2) (wt:cfg "TW_CONNECT_DISTANCE"))))
+      (wt:tw-run (wt:tw-field c1 c2) (wt:cfg "TW_CONNECT_DISTANCE"))))
   (wt:end))
 
 ;;; ===================================================================
@@ -1602,6 +1795,15 @@
              (not (wt:wr-has-num d out)))
       (setq out (cons d out))))
   (wt:sort out '<))
+
+;; faces minus the lines (faces, caps) owned by recognised walls that cross the
+;; direction u of master en: e.g. a branch's cap lying inside this wall's band must
+;; not split the band. Lines of parallel walls (collinear spans share faces) stay.
+(defun wt:wr-free-faces (faces known en u / others out)
+  (foreach w known
+    (if (and (not (eq (car w) en)) (not (wt:par u (wt:w-u w)))) (setq others (cons w others))))
+  (foreach f faces (if (not (wt:any-owned f others)) (setq out (cons f out))))
+  out)
 
 ;; Pure. The wall band around a master = the single pair of adjacent face offsets
 ;; bracketing offset 0. Returns (mid thickness), "AMBIG" (several), or nil (none).
@@ -1706,13 +1908,14 @@
 
 ;; Audit and repair wall masters in field. Returns the transaction record (or nil).
 (defun wt:wr-repair (field / net recs band reg adj amb ambs created walls i r w m p xs x nw k d
-                            pass more c seg en rec checked msg joined pair keep a b)
+                            pass more c seg en rec checked msg joined pair keep a b known)
   (setq net (wt:net-scan) adj 0 created 0 joined 0)
+  (foreach m (car net) (if (setq w (wt:wall-from-master m (cadr net))) (setq known (cons w known))))
   ;; 1. audit existing masters: faces decide the centerline and thickness
   (foreach m (car net)
     (if (wt:tw-seg-in-field (cadr m) (caddr m) field)
       (progn
-        (setq band (wt:wr-band (wt:wr-offsets (cadr m) (caddr m) (cadr net)))
+        (setq band (wt:wr-band (wt:wr-offsets (cadr m) (caddr m) (wt:wr-free-faces (cadr net) known (car m) (wt:unit (wt:v- (caddr m) (cadr m))))))
               reg (assoc (car m) *wt:reg*))
         (cond
           ((= (type band) 'LIST)
@@ -1833,7 +2036,1803 @@
     (wt:wr-repair (wt:tw-field c1 c2)))
   (wt:end))
 
+
+;; Off-centre legacy AKD walls: X-AXIS masters whose two faces form a band that
+;; does not centre on the master (older eccentric drawings, or a master moved by
+;; hand) that are not recognised as centred walls. Returned as the centred
+;; records WR would create. Such walls are left to
+;; WR: TX/TW/WWD/WWE never treat their faces as ordinary geometry.
+(defun wt:legacy-wall (m faces / band d)
+  (setq band (wt:wr-band (wt:wr-offsets (cadr m) (caddr m) faces)))
+  (if (and (= (type band) 'LIST) (> (abs (car band)) *wt:tol*))
+    (progn
+      (setq d (wt:v* (wt:perp (wt:unit (wt:v- (caddr m) (cadr m)))) (car band)))
+      (list (car m) (wt:v+ (cadr m) d) (wt:v+ (caddr m) d) (cadr band) "CENTER"))))
+
+;; Recognised centred walls are never legacy, and their own lines (faces, caps)
+;; are ignored when looking for an off-centre wall's face pair.
+(defun wt:legacy-walls (net / rec w out)
+  (foreach m (car net) (if (setq w (wt:wall-from-master m (cadr net))) (setq rec (cons w rec))))
+  (foreach m (car net)
+    (if (and (not (assoc (car m) rec))
+             (setq w (wt:legacy-wall m (wt:wr-free-faces (cadr net) rec (car m) (wt:unit (wt:v- (caddr m) (cadr m)))))))
+      (setq out (cons w out))))
+  out)
+
+;;; ===================================================================
+;;; 20. TX -- junction cleanup for ordinary LINE geometry (supertrim)
+;;; ===================================================================
+;;; Geometry-first: works on any selected LINEs (any layer, no AKD data).
+;;; Masters on AXIS_LAYER are skipped. Nothing is modified until the plan is
+;;; complete, and every decision reads the original snapshot only:
+;;;   wt:tx-snapshot   READ     selected LINEs, sorted by geometry (order-free)
+;;;   wt:tx-merge      PLAN 1   collinear duplicates / overlaps / small gaps -> one segment
+;;;   wt:tx-partners   ANALYZE  parallel face pairs (wall-like double lines)
+;;;   wt:tx-wall-phase PLAN 2   wall-like L (face miters) and T (branch into host)
+;;;   wt:tx-line-phase PLAN 3   single-line endpoints: L (fillet 0) and T (trim/extend to host)
+;;;   wt:tx-apply      MODIFY   entmod / entdel / entmake, recorded in *wt:pending*
+;;; Plan state: *wt:tx-moves* ((id side) . point), *wt:tx-erase* (id ...),
+;;; *wt:tx-cuts* ((id pa pb) ...) = remove the part of segment id between pa and pb.
+;;; A segment is (id p1 p2 enames): p1 lexicographically before p2, enames = the
+;;; surviving entity first, then collinear pieces merged into it.
+
+(setq *wt:tx-nprot* 0)
+(setq *wt:tx-tol-col* 0.5)    ; max offset between lines treated as collinear (drawing units)
+(setq *wt:tx-tol-par* 1e-4)   ; |sin| below this = parallel
+(setq *wt:tx-min-sin* 0.02)   ; |sin| below this (~1.1 deg) never forms a corner
+
+;; --- snapshot and geometry on segment records ---
+
+(defun wt:tx-lt (a b)
+  (cond ((< (car a) (- (car b) *wt:tol*)) t)
+        ((> (car a) (+ (car b) *wt:tol*)) nil)
+        (t (< (cadr a) (- (cadr b) *wt:tol*)))))
+
+(defun wt:tx-seg-lt (a b)
+  (cond ((wt:tx-lt (cadr a) (cadr b)) t)
+        ((wt:tx-lt (cadr b) (cadr a)) nil)
+        (t (wt:tx-lt (caddr a) (caddr b)))))
+
+(defun wt:tx-u (s) (wt:unit (wt:v- (caddr s) (cadr s))))
+(defun wt:tx-len (s) (wt:dist (cadr s) (caddr s)))
+(defun wt:tx-end (s side) (if (= side 0) (cadr s) (caddr s)))
+(defun wt:tx-out (s side) (if (= side 0) (wt:v* (wt:tx-u s) -1.0) (wt:tx-u s)))
+(defun wt:tx-sin (a b) (abs (wt:cross (wt:tx-u a) (wt:tx-u b))))
+(defun wt:tx-inter (a b) (wt:xline (cadr a) (wt:tx-u a) (cadr b) (wt:tx-u b)))
+(defun wt:tx-sta (p s) (wt:dot (wt:v- p (cadr s)) (wt:tx-u s)))
+(defun wt:tx-off (p s) (wt:cross (wt:tx-u s) (wt:v- p (cadr s))))
+(defun wt:tx-at (s st) (wt:v+ (cadr s) (wt:v* (wt:tx-u s) st)))
+(defun wt:tx-seg (id) (nth id *wt:tx-segs*))
+(defun wt:tx-iv (b a / s1 s2)            ; station interval of b on a's line
+  (setq s1 (wt:tx-sta (cadr b) a) s2 (wt:tx-sta (caddr b) a))
+  (list (min s1 s2) (max s1 s2)))
+
+;; enames -> (raw-segments axis-count unsupported-count); raw = (ename p1 p2)
+;; AKD wall geometry is protected from generic line repair: X-AXIS masters, and
+;; A-WALL lines owned by a recognised AKD wall or by an off-centre legacy wall
+;; (see wt:legacy-walls). Ownership is decided geometrically, not by layer.
+(defun wt:tx-protected-p (e p q ctx / f)
+  (setq f (list e p q))
+  (or (wt:face-owners f (car ctx)) (wt:any-owned f (cadr ctx))))
+
+(defun wt:tx-snapshot (ens / d p q out nax nother ctx)
+  (setq nax 0 nother 0 *wt:tx-nprot* 0
+        ctx (list (wt:net-scan) nil))
+  (setq ctx (list (car ctx) (wt:legacy-walls (car ctx))))
+  (foreach e ens
+    (setq d (entget e))
+    (cond ((/= (cdr (assoc 0 d)) "LINE") (setq nother (1+ nother)))
+          ((= (strcase (cdr (assoc 8 d))) (strcase (wt:cfg "AXIS_LAYER"))) (setq nax (1+ nax)))
+          (t
+           (setq p (wt:pt2 (cdr (assoc 10 d))) q (wt:pt2 (cdr (assoc 11 d))))
+           (cond
+             ((wt:peq p q))
+             ((wt:tx-protected-p e p q ctx) (setq *wt:tx-nprot* (1+ *wt:tx-nprot*)))
+             (t (setq out (cons (if (wt:tx-lt q p) (list e q p) (list e p q)) out)))))))
+  (list (wt:sort (reverse out) 'wt:tx-seg-lt) nax nother))
+
+;; --- PLAN 1: collinear merge ---
+
+(defun wt:tx-colp (a b)
+  (and (< (wt:tx-sin a b) *wt:tx-tol-par*)
+       (<= (abs (wt:tx-off (cadr b) a)) *wt:tx-tol-col*)
+       (<= (abs (wt:tx-off (caddr b) a)) *wt:tx-tol-col*)))
+
+;; Collinear a b merge when they overlap/touch, or the gap is <= D and no
+;; non-parallel line ends inside the gap within the gap width (an opening kept
+;; by a branch, e.g. the inner host face of a double-line T).
+(defun wt:tx-mergeable (a b raw / ib g0 g1 x st r)
+  (if (wt:tx-colp a b)
+    (progn
+      (setq ib (wt:tx-iv b a))
+      (cond ((> (car ib) (wt:tx-len a)) (setq g0 (wt:tx-len a) g1 (car ib)))
+            ((< (cadr ib) 0.0) (setq g0 (cadr ib) g1 0.0)))
+      (cond
+        ((not g0)   ; touching / overlapping: locus = the shared interval
+         (wt:tx-seg-in-field (wt:tx-at a (max 0.0 (car ib))) (wt:tx-at a (min (wt:tx-len a) (cadr ib)))))
+        ((> (- g1 g0) *wt:tx-D*) nil)
+        ((not (wt:tx-seg-in-field (wt:tx-at a g0) (wt:tx-at a g1))) nil)   ; gap outside the repair field
+        ((<= (- g1 g0) *wt:tol*) t)
+        (t
+         (setq r t)
+         (foreach k raw
+           (if (and r (>= (wt:tx-sin a k) *wt:tx-min-sin*)
+                    (setq x (wt:tx-inter a k))
+                    (setq st (wt:tx-sta x a))
+                    (>= st (- g0 *wt:tx-tol-col*)) (<= st (+ g1 *wt:tx-tol-col*))
+                    (<= (min (wt:dist x (cadr k)) (wt:dist x (caddr k))) (- g1 g0)))
+             (setq r nil)))
+         r)))))
+
+;; raw -> (segments merged-group-count). Groups are connected components over
+;; the geometry-sorted snapshot, so the result does not depend on selection order.
+(defun wt:tx-merge (raw / rest grp queue x keep id out merged surv lo hi st u ents)
+  (setq rest raw id 0 merged 0)
+  (while rest
+    (setq grp (list (car rest)) queue (list (car rest)) rest (cdr rest))
+    (while queue
+      (setq x (car queue) queue (cdr queue) keep nil)
+      (foreach o rest
+        (if (wt:tx-mergeable x o raw)
+          (setq grp (cons o grp) queue (append queue (list o)))
+          (setq keep (cons o keep))))
+      (setq rest (reverse keep)))
+    (setq grp (reverse grp) surv nil lo nil hi nil ents nil)
+    (foreach g grp
+      (if (or (not surv) (> (wt:tx-len g) (+ (wt:tx-len surv) *wt:tol*))) (setq surv g)))
+    (foreach g grp
+      (foreach p (list (cadr g) (caddr g))
+        (setq st (wt:tx-sta p surv))
+        (if (or (not lo) (< st lo)) (setq lo st))
+        (if (or (not hi) (> st hi)) (setq hi st)))
+      (if (not (eq (car g) (car surv))) (setq ents (cons (car g) ents))))
+    (setq u (wt:tx-u surv))
+    (if (cdr grp)
+      (progn
+        (setq merged (1+ merged))
+        (wt:dbg (list "TX COLLINEAR" (length grp) "lines -> segment" id "survivor" (car surv)))))
+    (setq out (cons (list id (wt:v+ (cadr surv) (wt:v* u lo)) (wt:v+ (cadr surv) (wt:v* u hi))
+                          (cons (car surv) (reverse ents)))
+                    out)
+          id (1+ id)))
+  (list (reverse out) merged))
+
+;; --- ANALYZE: connections and parallel pairs ---
+
+;; ids of non-parallel segments passing through endpoint (id side)
+(defun wt:tx-conn (ek / s p out)
+  (setq s (wt:tx-seg (car ek)) p (wt:tx-end s (cadr ek)))
+  (foreach k *wt:tx-segs*
+    (if (and (/= (car k) (car s)) (not (member (car k) *wt:tx-erase*))
+             (>= (wt:tx-sin s k) *wt:tx-min-sin*) (wt:on-seg p (cadr k) (caddr k)))
+      (setq out (cons (car k) out))))
+  out)
+
+(defun wt:tx-conn-ok (ek allowed / r)
+  (setq r t)
+  (foreach c (wt:tx-conn ek) (if (not (member c allowed)) (setq r nil)))
+  r)
+
+;; Equal spacing on both sides of s: prefer the side whose line matches s's own
+;; extent (overlap / longer length) by more than 0.25; similar extents stay unpaired.
+(defun wt:tx-tie-side (s cands pos neg / k iv ov sc sp sn)
+  (setq sp 0.0 sn 0.0)
+  (foreach c cands
+    (setq k (wt:tx-seg (cdr c)) iv (wt:tx-iv k s)
+          ov (- (min (cadr iv) (wt:tx-len s)) (max (car iv) 0.0))
+          sc (/ ov (max (wt:tx-len s) (wt:tx-len k))))
+    (cond ((<= (abs (- (car c) pos)) *wt:tx-tol-col*) (setq sp (max sp sc)))
+          ((<= (abs (- (car c) neg)) *wt:tx-tol-col*) (setq sn (max sn sc)))))
+  (cond ((> sp (+ sn 0.25)) pos)
+        ((> sn (+ sp 0.25)) neg)
+        (t (wt:dbg (list "TX PAIR TIE segment" (car s) "equal spacing both sides, similar extents -> no wall partner"))
+           nil)))
+
+;; Parallel segments on the nearer side of s at spacing (tol-col, W], overlapping
+;; at least half the shorter line. Collinear pieces at the same spacing all count
+;; (a split host face). Equal spacing on both sides = no partner.
+(defun wt:tx-partners (s / o iv ov cands pos neg side out)
+  (foreach k (if (member (car s) *wt:tx-nopair*) nil *wt:tx-segs*)   ; cap lines never pair
+    (if (and (/= (car k) (car s)) (< (wt:tx-sin s k) *wt:tx-tol-par*) (not (member (car k) *wt:tx-nopair*)))
+      (progn
+        (setq o (wt:tx-off (cadr k) s) iv (wt:tx-iv k s)
+              ov (- (min (cadr iv) (wt:tx-len s)) (max (car iv) 0.0)))
+        (if (and (> (abs o) *wt:tx-tol-col*) (<= (abs o) *wt:tx-W*)
+                 (>= ov (* 0.5 (min (wt:tx-len s) (wt:tx-len k)))))
+          (setq cands (cons (cons o (car k)) cands))))))
+  (foreach c cands
+    (if (> (car c) 0)
+      (if (or (not pos) (< (car c) pos)) (setq pos (car c)))
+      (if (or (not neg) (> (car c) neg)) (setq neg (car c)))))
+  (setq side (cond ((and pos neg)
+                    (cond ((< pos (- (- neg) *wt:tx-tol-col*)) pos)
+                          ((< (- neg) (- pos *wt:tx-tol-col*)) neg)
+                          (t (wt:tx-tie-side s cands pos neg))))
+                   (pos) (neg)))
+  (if side
+    (foreach c cands (if (<= (abs (- (car c) side)) *wt:tx-tol-col*) (setq out (cons (cdr c) out)))))
+  (reverse out))
+
+;; Cap-like lines: both ends exactly on endpoints of two parallel lines f g, length =
+;; their spacing -> ((k f g) ...). Such a line is excluded from wall pairing when f g
+;; are a mutual pair without it (it closes a wall end); otherwise it pairs normally.
+(setq *wt:tx-nopair* nil)
+(defun wt:tx-cap-like (/ out f g pa pb)
+  (foreach k *wt:tx-segs*
+    (setq pa (cadr k) pb (caddr k) f nil g nil)
+    (foreach x *wt:tx-segs*
+      (if (and (/= (car x) (car k)) (>= (wt:tx-sin x k) *wt:tx-min-sin*))
+        (progn
+          (if (or (wt:peq pa (cadr x)) (wt:peq pa (caddr x))) (setq f (if f -1 (car x))))
+          (if (or (wt:peq pb (cadr x)) (wt:peq pb (caddr x))) (setq g (if g -1 (car x)))))))
+    (if (and f g (>= f 0) (>= g 0) (/= f g)
+             (< (wt:tx-sin (wt:tx-seg f) (wt:tx-seg g)) *wt:tx-tol-par*)
+             (<= (abs (- (wt:tx-len k) (abs (wt:tx-off (cadr (wt:tx-seg g)) (wt:tx-seg f))))) *wt:tx-tol-col*))
+      (setq out (cons (list (car k) f g) out))))
+  (reverse out))
+
+;; partner table with cap lines resolved
+(defun wt:tx-build-ptab (/ caps keep)
+  (setq caps (wt:tx-cap-like) *wt:tx-nopair* (mapcar 'car caps))
+  (setq *wt:tx-ptab* (mapcar '(lambda (s) (cons (car s) (wt:tx-partners s))) *wt:tx-segs*))
+  (foreach c caps (if (wt:tx-pairp (cadr c) (caddr c)) (setq keep (cons (car c) keep))))
+  (if (/= (length keep) (length caps))
+    (setq *wt:tx-nopair* keep
+          *wt:tx-ptab* (mapcar '(lambda (s) (cons (car s) (wt:tx-partners s))) *wt:tx-segs*)))
+  (foreach k keep (wt:dbg (list "TX CAP LINE segment" k "closes a wall end (not a wall face)")))
+  *wt:tx-ptab*)
+
+(defun wt:tx-pairp (i j)
+  (and (member j (cdr (assoc i *wt:tx-ptab*))) (member i (cdr (assoc j *wt:tx-ptab*)))))
+
+(defun wt:tx-paired-p (i / r)
+  (foreach j (cdr (assoc i *wt:tx-ptab*)) (if (wt:tx-pairp i j) (setq r t)))
+  r)
+
+;; all segments collinear with s (its line family), ids
+(defun wt:tx-family (s / out)
+  (foreach k *wt:tx-segs* (if (or (= (car k) (car s)) (wt:tx-colp s k)) (setq out (cons (car k) out))))
+  (reverse out))
+
+;; --- PLAN 2: wall-like junctions ---
+
+;; Wall ends: for each mutual pair, the two face endpoints on the same side whose
+;; stations differ by <= D + spacing. End = (key outward spacing cap-id)
+;; key = (ia sa ib sb). cap = a selected line joining exactly those two endpoints.
+(defun wt:tx-wall-ends (/ out b u sp sa sb pa pb cap o)
+  (foreach a *wt:tx-segs*
+    (foreach j (cdr (assoc (car a) *wt:tx-ptab*))
+      (if (and (< (car a) j) (wt:tx-pairp (car a) j))
+        (progn
+          (setq b (wt:tx-seg j) u (wt:tx-u a) sp (abs (wt:tx-off (cadr b) a)))
+          (foreach sa '(0 1)
+            (setq o (wt:tx-out a sa) pa (wt:tx-end a sa)
+                  sb (if (> (wt:dot (cadr b) o) (wt:dot (caddr b) o)) 0 1)
+                  pb (wt:tx-end b sb) cap nil)
+            (if (<= (abs (wt:dot (wt:v- pa pb) u)) (+ *wt:tx-D* sp))
+              (progn
+                (foreach c *wt:tx-segs*
+                  (if (or (and (wt:peq (cadr c) pa) (wt:peq (caddr c) pb))
+                          (and (wt:peq (cadr c) pb) (wt:peq (caddr c) pa)))
+                    (setq cap (car c))))
+                (setq out (cons (list (list (car a) sa j sb) o sp cap) out)))))))))
+  (reverse out))
+
+(defun wt:tx-end-keys (e) (list (list (car (car e)) (cadr (car e))) (list (caddr (car e)) (cadddr (car e)))))
+(defun wt:tx-end-mid (e / k)
+  (setq k (wt:tx-end-keys e))
+  (wt:v* (wt:v+ (wt:tx-end (wt:tx-seg (car (car k))) (cadr (car k)))
+                (wt:tx-end (wt:tx-seg (car (cadr k))) (cadr (cadr k)))) 0.5))
+
+;; end e's face endpoint keys as (inner outer); inner = face nearer body direction bdir
+(defun wt:tx-in-out (e bdir / k m fa fb qa qb)
+  (setq k (wt:tx-end-keys e) m (wt:tx-end-mid e)
+        fa (wt:tx-seg (car (car k))) fb (wt:tx-seg (car (cadr k)))
+        qa (wt:tx-at fa (wt:tx-sta m fa)) qb (wt:tx-at fb (wt:tx-sta m fb)))
+  (if (> (wt:dot qa bdir) (wt:dot qb bdir)) k (list (cadr k) (car k))))
+
+;; signed move of endpoint ek to x along its own outward direction, or nil when
+;; outside [lo hi] or the line would collapse
+(defun wt:tx-mv (ek x lo hi / s m)
+  (setq s (wt:tx-seg (car ek)) m (wt:dot (wt:v- x (wt:tx-end s (cadr ek))) (wt:tx-out s (cadr ek))))
+  (if (and (>= m lo) (<= m hi) (> m (- *wt:tol* (wt:tx-len s)))) m))
+
+(defun wt:tx-ids (e) (list (car (car e)) (caddr (car e))))
+
+;; candidate = (type score moves cuts erases partner-key label)
+;; Wall L: inner face meets inner face, outer meets outer; all four face ends
+;; move by at most D + the other wall's spacing.
+(defun wt:tx-wall-L (ea eb / ioa iob xin xout lim-a lim-b m1 m2 m3 m4 ka kb)
+  (if (and (not (wt:any-member (wt:tx-ids ea) (wt:tx-ids eb)))
+           (>= (wt:tx-sin (wt:tx-seg (car (car ea))) (wt:tx-seg (car (car eb)))) *wt:tx-min-sin*))
+    (progn
+      (setq ioa (wt:tx-in-out ea (wt:v* (cadr eb) -1.0)) iob (wt:tx-in-out eb (wt:v* (cadr ea) -1.0))
+            xin (wt:tx-inter (wt:tx-seg (car (car ioa))) (wt:tx-seg (car (car iob))))
+            xout (wt:tx-inter (wt:tx-seg (car (cadr ioa))) (wt:tx-seg (car (cadr iob))))
+            lim-a (+ *wt:tx-D* (caddr eb)) lim-b (+ *wt:tx-D* (caddr ea))
+            ka (append (wt:tx-ids eb) (if (cadddr ea) (list (cadddr ea))))
+            kb (append (wt:tx-ids ea) (if (cadddr eb) (list (cadddr eb)))))
+      (if (and xin xout
+               (setq m1 (wt:tx-mv (car ioa) xin (- lim-a) lim-a))
+               (setq m2 (wt:tx-mv (cadr ioa) xout (- lim-a) lim-a))
+               (setq m3 (wt:tx-mv (car iob) xin (- lim-b) lim-b))
+               (setq m4 (wt:tx-mv (cadr iob) xout (- lim-b) lim-b))
+               (wt:tx-conn-ok (car ioa) ka) (wt:tx-conn-ok (cadr ioa) ka)
+               (wt:tx-conn-ok (car iob) kb) (wt:tx-conn-ok (cadr iob) kb))
+        (list "WALL-L" (max (abs m1) (abs m2))
+              (list (cons (car ioa) xin) (cons (cadr ioa) xout) (cons (car iob) xin) (cons (cadr iob) xout))
+              nil
+              (append (if (cadddr ea) (list (cadddr ea))) (if (cadddr eb) (list (cadddr eb))))
+              (car eb)
+              (list "faces" (car (car ioa)) "<->" (car (car iob)) "/" (car (cadr ioa)) "<->" (car (cadr iob))
+                    "spacing" (caddr ea) (caddr eb)))))))
+
+;; Wall T: branch end eb into host pair (h k). The host face nearer the branch body
+;; is the near face; branch faces terminate on it (extend <= D, trim <= D + host
+;; spacing). The far face must continue D beyond the junction on both sides.
+;; Near-face pieces lose the part between the branch faces.
+(defun wt:tx-wall-T (eb h k / m o xh xk near far sph kb x1 x2 m1 m2 s1 s2 t1 t2 cov famn famf
+                        allowed moves cuts erases iv sa hit local)
+  (setq m (wt:tx-end-mid eb) o (cadr eb) kb (wt:tx-end-keys eb))
+  (if (and (not (member (car h) (wt:tx-ids eb))) (not (member (car k) (wt:tx-ids eb)))
+           (>= (wt:tx-sin h (wt:tx-seg (car (car kb)))) *wt:tx-min-sin*)
+           (setq xh (wt:xline m o (cadr h) (wt:tx-u h)))
+           (setq xk (wt:xline m o (cadr k) (wt:tx-u k))))
+    (progn
+      (if (< (wt:dot (wt:v- xh m) o) (wt:dot (wt:v- xk m) o)) (setq near h far k) (setq near k far h))
+      (setq sph (abs (wt:tx-off (cadr k) h))
+            x1 (wt:tx-inter (wt:tx-seg (car (car kb))) near)
+            x2 (wt:tx-inter (wt:tx-seg (car (cadr kb))) near)
+            famn (wt:tx-family near) famf (wt:tx-family far)
+            allowed (append famn famf (if (cadddr eb) (list (cadddr eb)))))
+      (setq t1 (min (wt:tx-sta x1 far) (wt:tx-sta x2 far)) t2 (max (wt:tx-sta x1 far) (wt:tx-sta x2 far)))
+      (foreach f famf
+        (setq iv (wt:tx-iv (wt:tx-seg f) far))
+        (if (and (<= (car iv) (- t1 *wt:tx-D*)) (>= (cadr iv) (+ t2 *wt:tx-D*))) (setq cov t)))
+      (setq s1 (min (wt:tx-sta x1 near) (wt:tx-sta x2 near)) s2 (max (wt:tx-sta x1 near) (wt:tx-sta x2 near)))
+      ;; debug only: host near face within reach of this branch end
+      (setq local (<= (abs (wt:dot (wt:v- (if (eq near h) xh xk) m) o)) (+ *wt:tx-D* sph)))
+      (if (and cov
+               (setq m1 (wt:tx-mv (car kb) x1 (- (+ *wt:tx-D* sph)) *wt:tx-D*))
+               (setq m2 (wt:tx-mv (cadr kb) x2 (- (+ *wt:tx-D* sph)) *wt:tx-D*))
+               (wt:tx-conn-ok (car kb) allowed) (wt:tx-conn-ok (cadr kb) allowed))
+        (progn
+          (setq moves (list (cons (car kb) x1) (cons (cadr kb) x2)))
+          (if (cadddr eb) (setq erases (list (cadddr eb))))
+          (foreach f famn
+            (setq iv (wt:tx-iv (wt:tx-seg f) near)
+                  sa (if (<= (wt:tx-sta (cadr (wt:tx-seg f)) near) (wt:tx-sta (caddr (wt:tx-seg f)) near)) 0 1))
+            (if (and (>= (cadr iv) (- s1 *wt:tx-D*)) (<= (car iv) (+ s2 *wt:tx-D*)))
+              (progn
+                (setq hit t)
+                (cond
+                  ((and (>= (car iv) (- s1 *wt:tol*)) (<= (cadr iv) (+ s2 *wt:tol*)))
+                   (setq erases (cons f erases)))
+                  ((and (< (car iv) (- s1 *wt:tol*)) (> (cadr iv) (+ s2 *wt:tol*)))
+                   (setq cuts (cons (list f (wt:tx-at near s1) (wt:tx-at near s2)) cuts)))
+                  ((< (car iv) (- s1 *wt:tol*))
+                   (if (> (abs (- (cadr iv) s1)) *wt:tol*)
+                     (setq moves (cons (cons (list f (- 1 sa)) (wt:tx-at near s1)) moves))))
+                  ((> (abs (- (car iv) s2)) *wt:tol*)
+                   (setq moves (cons (cons (list f sa) (wt:tx-at near s2)) moves)))))))
+          (if hit
+            (list "WALL-T" (max (abs m1) (abs m2)) moves cuts erases nil
+                  (list "host near" (car near) "far" (car far) "branch" (wt:tx-ids eb)
+                        "spacing" (caddr eb) sph)
+                  ;; debug detail: targets, movements, branch endpoints, host faces, opening
+                  (list x1 x2 m1 m2 (wt:tx-end (wt:tx-seg (car (car kb))) (cadr (car kb)))
+                        (wt:tx-end (wt:tx-seg (car (cadr kb))) (cadr (cadr kb)))
+                        near far (wt:tx-at near s1) (wt:tx-at near s2)))
+            (if local (wt:dbg (list "TX NOT T: branch" (wt:tx-ids eb) "host near" (car near) "far" (car far)
+                                    "- no host near-face piece at the junction")))))
+        (if local
+          (wt:dbg (list "TX NOT T: branch" (wt:tx-ids eb) "host near" (car near) "far" (car far) "-"
+                        (cond ((not cov) "host far face does not continue D beyond the junction on both sides")
+                              ((not (and m1 m2)) "branch face end farther from host near face than allowed")
+                              (t "branch face end already joined to a line outside the host")))))))))
+
+;; candidates sorted by score -> (status candidate); unique only when the next
+;; different candidate scores more than twice the best (+ tol-col)
+(defun wt:tx-choose (cands / s)
+  (setq s (wt:sort cands '(lambda (a b) (< (cadr a) (cadr b)))))
+  (cond ((not s) nil)
+        ((and (cdr s) (<= (cadr (cadr s)) (+ (* 2.0 (cadr (car s))) *wt:tx-tol-col*)))
+         (list "AMBIG" s))
+        (t (list "OK" (car s)))))
+
+;; a candidate with any real geometry change
+(defun wt:tx-changes-p (c / r)
+  (if (or (cadddr c) (nth 4 c)) (setq r t))
+  (foreach mv (caddr c)
+    (if (not (wt:peq (cdr mv) (wt:tx-end (wt:tx-seg (car (car mv))) (cadr (car mv))))) (setq r t)))
+  r)
+
+;; add a candidate to the plan unless it moves an endpoint already planned elsewhere
+(defun wt:tx-plan-add (c / ok old)
+  (setq ok t)
+  (foreach mv (caddr c)
+    (if (and (setq old (assoc (car mv) *wt:tx-moves*)) (not (wt:peq (cdr old) (cdr mv)))) (setq ok nil)))
+  (if ok
+    (progn
+      (foreach mv (caddr c) (if (not (assoc (car mv) *wt:tx-moves*)) (setq *wt:tx-moves* (cons mv *wt:tx-moves*))))
+      (setq *wt:tx-cuts* (append *wt:tx-cuts* (cadddr c)))
+      (foreach e (nth 4 c) (if (not (member e *wt:tx-erase*)) (setq *wt:tx-erase* (cons e *wt:tx-erase*))))))
+  ok)
+
+;; debug report of a WALL-T candidate: branch movement and host near-face opening
+;; are separate questions (movement 0 can still need an opening)
+(defun wt:tx-dbg-T (c / d lb nm)
+  (if (and *wt-debug* (= (car c) "WALL-T") (setq d (nth 7 c)))
+    (progn
+      (setq lb (nth 6 c) nm (- (length (caddr c)) 2))
+      (wt:dbg (list "TX WALL T  HOST: near face" (car (nth 6 d)) "far face" (car (nth 7 d)) "spacing" (wt:fmt (nth 8 lb))))
+      (wt:dbg (list "  BRANCH: faces" (nth 5 lb) "spacing" (wt:fmt (nth 7 lb))))
+      (wt:dbg (list "  BRANCH FACE B1 endpoint" (nth 4 d) "target" (car d) "movement" (wt:fmt (caddr d))))
+      (wt:dbg (list "  BRANCH FACE B2 endpoint" (nth 5 d) "target" (cadr d) "movement" (wt:fmt (cadddr d))))
+      (wt:dbg (list "  HOST NEAR FACE: segment" (car (nth 6 d)) (cadr (nth 6 d)) "->" (caddr (nth 6 d))))
+      (wt:dbg (list "  REQUIRED OPENING:" (nth 8 d) "->" (nth 9 d)))
+      (wt:dbg (list "  CURRENT OPENING:"
+                    (cond ((cadddr c) "NO (near face continuous)")
+                          ((or (> nm 0) (nth 4 c)) "PARTIAL (near-face pieces need normalizing)")
+                          (t "YES"))))
+      (wt:dbg (list "  ACTION:"
+                    (if (cadddr c) "SPLIT HOST NEAR FACE" "")
+                    (if (> nm 0) "NORMALIZE NEAR-FACE PIECES" "")
+                    (if (nth 4 c) "ERASE PIECES/CAP" "")
+                    (if (or (> (abs (caddr d)) *wt:tol*) (> (abs (cadddr d)) *wt:tol*)) "MOVE BRANCH FACES" "")
+                    (if (wt:tx-changes-p c) "" "NONE (already clean)"))))))
+
+;; returns (repaired ambiguous)
+(defun wt:tx-wall-phase (/ ends choices cands ch pc done n amb hosts key)
+  (setq ends (wt:tx-unclaimed (wt:tx-wall-ends)) n 0 amb 0)   ; cross nodes excluded
+  (foreach e ends
+    (setq cands nil hosts nil)
+    (foreach e2 ends (if (and (not (equal e e2)) (setq ch (wt:tx-wall-L e e2))) (setq cands (cons ch cands))))
+    (foreach a *wt:tx-segs*
+      (foreach j (cdr (assoc (car a) *wt:tx-ptab*))
+        (if (and (< (car a) j) (wt:tx-pairp (car a) j) (setq ch (wt:tx-wall-T e a (wt:tx-seg j))))
+          (progn
+            ;; host identity = its two line families, in either order (a split face is reached via each piece)
+            (setq key (list (min (car (wt:tx-family a)) (car (wt:tx-family (wt:tx-seg j))))
+                            (max (car (wt:tx-family a)) (car (wt:tx-family (wt:tx-seg j))))))
+            (if (not (member key hosts)) (setq hosts (cons key hosts) cands (cons ch cands)))))))
+    (setq choices (cons (cons (car e) (wt:tx-choose cands)) choices)))
+  (foreach e ends
+    (setq ch (cdr (assoc (car e) choices)))
+    (cond
+      ((not ch))
+      ((= (car ch) "AMBIG")
+       (if (wt:tx-pt-in-field (wt:tx-end-mid e)) (setq amb (1+ amb)))
+       (wt:dbg (list "TX AMBIGUOUS WALL END" (car e)))
+       (foreach c (cadr ch) (wt:dbg (list "  candidate" (car c) "score" (wt:fmt (cadr c)) (nth 6 c)))))
+      ((member (car e) done))
+      ((and (= (car (cadr ch)) "WALL-L")
+            (not (and (setq pc (cdr (assoc (nth 5 (cadr ch)) choices))) (= (car pc) "OK")
+                      (= (car (cadr pc)) "WALL-L") (equal (nth 5 (cadr pc)) (car e)))))
+       (wt:dbg (list "TX WALL END" (car e) "L partner does not agree, unchanged")))
+      ((not (wt:tx-changes-p (cadr ch)))
+       (wt:tx-dbg-T (cadr ch))
+       (setq done (cons (car e) done)))
+      ((not (wt:tx-cand-in-field (cadr ch)))
+       (wt:dbg (list "TX WALL END" (car e) "junction outside repair field, unchanged")))
+      ((wt:tx-plan-add (cadr ch))
+       (wt:tx-dbg-T (cadr ch))
+       (setq n (1+ n) done (cons (car e) done))
+       (if (nth 5 (cadr ch)) (setq done (cons (nth 5 (cadr ch)) done)))
+       (wt:dbg (list "TX WALL PAIR end" (car e) "junction" (car (cadr ch)) (nth 6 (cadr ch))))
+       (foreach mv (caddr (cadr ch)) (wt:dbg (list "  ACTION segment" (car (car mv)) "P" (1+ (cadr (car mv))) "->" (cdr mv)))))
+      (t (setq amb (1+ amb)) (wt:dbg (list "TX WALL END" (car e) "conflicts with an earlier repair, unchanged")))))
+  (list n amb))
+
+;; --- PLAN 2a: double-line CROSS (+), planned before wall L/T ---
+;; *wt:tx-claims* ((family-ids ref-seg s1 s2) ...): face stretches owned by a
+;; recognised cross. Endpoints inside [s1-D, s2+D] are not reinterpreted by the
+;; wall L/T or single-line rules.
+
+;; distinct wall pairs: (key face1 face2 family1 family2), key = sorted family ids
+(defun wt:tx-walls (/ out fa fb key)
+  (foreach a *wt:tx-segs*
+    (foreach j (cdr (assoc (car a) *wt:tx-ptab*))
+      (if (and (< (car a) j) (wt:tx-pairp (car a) j))
+        (progn
+          (setq fa (wt:tx-family a) fb (wt:tx-family (wt:tx-seg j))
+                key (list (min (car fa) (car fb)) (max (car fa) (car fb))))
+          (if (not (assoc key out)) (setq out (cons (list key a (wt:tx-seg j) fa fb) out)))))))
+  (reverse out))
+
+;; station extent (lo hi) of a line family on ref
+(defun wt:tx-fam-ext (fam ref / iv lo hi)
+  (foreach f fam
+    (setq iv (wt:tx-iv (wt:tx-seg f) ref))
+    (if (or (not lo) (< (car iv) lo)) (setq lo (car iv)))
+    (if (or (not hi) (> (cadr iv) hi)) (setq hi (cadr iv))))
+  (list lo hi))
+
+;; some piece of the family reaches [s1-D, s2+D]
+(defun wt:tx-fam-near (fam ref s1 s2 / r iv)
+  (foreach f fam
+    (setq iv (wt:tx-iv (wt:tx-seg f) ref))
+    (if (and (>= (cadr iv) (- s1 *wt:tx-D*)) (<= (car iv) (+ s2 *wt:tx-D*))) (setq r t)))
+  r)
+
+;; Interval clipping of a collinear family against the opening (s1 s2) on ref:
+;; inside -> erase, spans -> cut, crosses/stops short of s1 or s2 (within D) -> end moved there.
+;; Returns (moves cuts erases).
+(defun wt:tx-clip-family (fam ref s1 s2 / iv sa moves cuts erases)
+  (foreach f fam
+    (setq iv (wt:tx-iv (wt:tx-seg f) ref)
+          sa (if (<= (wt:tx-sta (cadr (wt:tx-seg f)) ref) (wt:tx-sta (caddr (wt:tx-seg f)) ref)) 0 1))
+    (if (and (>= (cadr iv) (- s1 *wt:tx-D*)) (<= (car iv) (+ s2 *wt:tx-D*)))
+      (cond
+        ((and (>= (car iv) (- s1 *wt:tol*)) (<= (cadr iv) (+ s2 *wt:tol*)))
+         (setq erases (cons f erases)))
+        ((and (< (car iv) (- s1 *wt:tol*)) (> (cadr iv) (+ s2 *wt:tol*)))
+         (setq cuts (cons (list f (wt:tx-at ref s1) (wt:tx-at ref s2)) cuts)))
+        ((< (car iv) (- s1 *wt:tol*))
+         (if (> (abs (- (cadr iv) s1)) *wt:tol*)
+           (setq moves (cons (cons (list f (- 1 sa)) (wt:tx-at ref s1)) moves))))
+        ((> (abs (- (car iv) s2)) *wt:tol*)
+         (setq moves (cons (cons (list f sa) (wt:tx-at ref s2)) moves))))))
+  (list moves cuts erases))
+
+;; Wall wa x wall wb -> (candidate claims center) or nil.
+;; CROSS: non-parallel, all four face families reach the overlap, and every face
+;; of BOTH walls extends more than D beyond the overlap on BOTH sides.
+(defun wt:tx-wall-cross (wa wb / faces rows ok lo-ok hi-ok x1 x2 st1 st2 ext row moves cuts erases r claims cen why)
+  (if (and (>= (wt:tx-sin (cadr wa) (cadr wb)) *wt:tx-min-sin*)
+           (not (wt:any-member (append (cadddr wa) (nth 4 wa)) (append (cadddr wb) (nth 4 wb)))))
+    (progn
+      (setq faces (list (list (cadr wa) (cadddr wa) (cadr wb) (caddr wb) "A")
+                        (list (caddr wa) (nth 4 wa) (cadr wb) (caddr wb) "A")
+                        (list (cadr wb) (cadddr wb) (cadr wa) (caddr wa) "B")
+                        (list (caddr wb) (nth 4 wb) (cadr wa) (caddr wa) "B"))
+            ok t cen '(0.0 0.0))
+      ;; row = (face fam s1 s2 lo hi wall p1 p2)
+      (foreach f faces
+        (setq x1 (wt:tx-inter (car f) (caddr f)) x2 (wt:tx-inter (car f) (cadddr f))
+              st1 (wt:tx-sta x1 (car f)) st2 (wt:tx-sta x2 (car f))
+              ext (wt:tx-fam-ext (cadr f) (car f))
+              cen (wt:v+ cen (wt:v* x1 0.125)) cen (wt:v+ cen (wt:v* x2 0.125)))
+        (if (> st1 st2) (setq r st1 st1 st2 st2 r r x1 x1 x2 x2 r))
+        (if (not (wt:tx-fam-near (cadr f) (car f) st1 st2)) (setq ok nil))
+        (setq rows (cons (list (car f) (cadr f) st1 st2 (car ext) (cadr ext) (nth 4 f) x1 x2) rows)))
+      (setq rows (reverse rows))
+      (if ok
+        (progn
+          (foreach w '("A" "B")
+            (setq lo-ok t hi-ok t)
+            (foreach row rows
+              (if (= (nth 6 row) w)
+                (progn
+                  (if (not (< (nth 4 row) (- (nth 2 row) *wt:tx-D*))) (setq lo-ok nil))
+                  (if (not (> (nth 5 row) (+ (nth 3 row) *wt:tx-D*))) (setq hi-ok nil)))))
+            (wt:dbg (list "TX CROSS CHECK wall" w "faces" (car (car (car (if (= w "A") rows (cddr rows)))))
+                          (car (car (car (if (= w "A") (cdr rows) (cdddr rows)))))
+                          "before =" (if lo-ok "YES" "NO") "after =" (if hi-ok "YES" "NO")))
+            (if (not (and lo-ok hi-ok))
+              (setq why (strcat "NOT CROSS: Wall " w " does not continue beyond intersection on both sides."))))
+          (if why
+            (progn (wt:dbg (list "TX" why)) nil)
+            (progn
+              (wt:dbg (list "TX WALL CROSS  A faces" (car (cadr wa)) (car (caddr wa))
+                            "spacing" (wt:fmt (abs (wt:tx-off (cadr (caddr wa)) (cadr wa))))
+                            "  B faces" (car (cadr wb)) (car (caddr wb))
+                            "spacing" (wt:fmt (abs (wt:tx-off (cadr (caddr wb)) (cadr wb))))))
+              (foreach row rows
+                (setq r (wt:tx-clip-family (cadr row) (car row) (nth 2 row) (nth 3 row))
+                      moves (append moves (car r)) cuts (append cuts (cadr r)) erases (append erases (caddr r))
+                      claims (cons (list (cadr row) (car row) (nth 2 row) (nth 3 row)) claims))
+                (wt:dbg (list "  face" (car (car row)) "intersections" (nth 7 row) (nth 8 row)
+                              "remove interval" (nth 7 row) "->" (nth 8 row))))
+              (list (list "WALL-CROSS" 0.0 moves cuts erases nil nil) claims cen))))))))
+
+;; endpoint inside a claimed cross stretch
+(defun wt:tx-claimed-p (ek / s p r st)
+  (setq s (wt:tx-seg (car ek)) p (wt:tx-end s (cadr ek)))
+  (foreach c *wt:tx-claims*
+    (if (member (car ek) (car c))
+      (progn
+        (setq st (wt:tx-sta p (cadr c)))
+        (if (and (>= st (- (caddr c) *wt:tx-D*)) (<= st (+ (cadddr c) *wt:tx-D*))) (setq r t)))))
+  r)
+
+(defun wt:tx-unclaimed (ends / out)
+  (foreach e ends
+    (if (not (or (wt:tx-claimed-p (car (wt:tx-end-keys e))) (wt:tx-claimed-p (cadr (wt:tx-end-keys e)))))
+      (setq out (cons e out))))
+  (reverse out))
+
+;; returns (repaired ambiguous). Two crosses sharing a wall whose centres are
+;; closer than D + both spacings compete for one node (3+ walls) -> ambiguous.
+(defun wt:tx-cross-phase (/ walls rest c cands bad n amb lim)
+  (setq walls (wt:tx-walls) n 0 amb 0)
+  (while walls
+    (foreach wb (cdr walls)
+      (if (setq c (wt:tx-wall-cross (car walls) wb))
+        (setq cands (cons (append c (list (car (car walls)) (car wb)
+                                          (+ (abs (wt:tx-off (cadr (caddr (car walls))) (cadr (car walls))))
+                                             (abs (wt:tx-off (cadr (caddr wb)) (cadr wb))))))
+                          cands))))
+    (setq walls (cdr walls)))
+  (setq cands (reverse cands))
+  (foreach c cands
+    (foreach c2 cands
+      (if (and (not (eq c c2))
+               (or (equal (nth 3 c) (nth 3 c2)) (equal (nth 3 c) (nth 4 c2))
+                   (equal (nth 4 c) (nth 3 c2)) (equal (nth 4 c) (nth 4 c2)))
+               (< (wt:dist (caddr c) (caddr c2)) (+ *wt:tx-D* (max (nth 5 c) (nth 5 c2)))))
+        (setq bad (cons c bad)))))
+  (foreach c cands
+    (cond
+      ((member c bad)
+       (if (wt:tx-pt-in-field (caddr c)) (setq amb (1+ amb)))
+       (wt:dbg (list "TX AMBIGUOUS CROSS at" (caddr c) "more than two wall families meet, unchanged")))
+      ((not (wt:tx-changes-p (car c)))
+       (setq *wt:tx-claims* (append *wt:tx-claims* (cadr c)))
+       (wt:dbg (list "TX CROSS at" (caddr c) "already clean")))
+      ((not (wt:tx-pt-in-field (caddr c)))
+       (setq *wt:tx-claims* (append *wt:tx-claims* (cadr c)))
+       (wt:dbg (list "TX CROSS at" (caddr c) "outside repair field, unchanged")))
+      ((wt:tx-plan-add (car c))
+       (setq *wt:tx-claims* (append *wt:tx-claims* (cadr c)) n (1+ n))
+       (wt:dbg (list "TX CROSS at" (caddr c) "CLASSIFICATION CROSS, repaired")))
+      (t (setq amb (1+ amb)) (wt:dbg (list "TX CROSS at" (caddr c) "conflicts with an earlier repair, unchanged")))))
+  (list n amb))
+
+;; --- PLAN 3: single-line endpoints ---
+
+;; candidates for free endpoint ek of an unpaired segment:
+;;  L = (x within D of both free ends; both move), T = endpoint moves onto host line
+(defun wt:tx-line-cands (ek / s p o len x m st lj sj dj jk out same)
+  (setq s (wt:tx-seg (car ek)) p (wt:tx-end s (cadr ek)) o (wt:tx-out s (cadr ek)) len (wt:tx-len s))
+  (foreach j *wt:tx-segs*
+    (if (and (/= (car j) (car s)) (not (member (car j) *wt:tx-erase*))
+             (>= (wt:tx-sin s j) *wt:tx-min-sin*)
+             (setq x (wt:tx-inter s j))
+             (setq m (wt:dot (wt:v- x p) o))
+             (<= (abs m) *wt:tx-D*) (> m (- *wt:tol* len)))
+      (progn
+        (setq st (wt:tx-sta x j) lj (wt:tx-len j) sj (if (< st (/ lj 2.0)) 0 1)
+              dj (if (= sj 0) (- st) (- st lj)) jk (list (car j) sj))
+        (cond
+          ((and (<= (abs dj) *wt:tx-D*) (> dj (- *wt:tol* lj))
+                (not (wt:tx-paired-p (car j))) (not (assoc jk *wt:tx-moves*)) (not (wt:tx-conn jk)))
+           (setq out (cons (list "L" (abs m) x jk) out)))
+          ((and (>= st (- *wt:tol*)) (<= st (+ lj *wt:tol*)))
+           (setq out (cons (list "T" (abs m) x (car j)) out)))))))
+  ;; candidates at the same point are one junction (T wins; several L partners = ambiguous)
+  (setq same nil)
+  (foreach c out
+    (if (not (wt:tx-point-in (caddr c) same))
+      (setq same (cons (wt:tx-collapse (caddr c) out) same))))
+  same)
+
+(defun wt:tx-point-in (x cands / r) (foreach c cands (if (wt:peq x (caddr c)) (setq r t))) r)
+
+;; all candidates at x -> one: a T if any, else the L if exactly one, else "LL" (ambiguous)
+(defun wt:tx-collapse (x cands / ts ls)
+  (foreach c cands
+    (if (wt:peq x (caddr c)) (if (= (car c) "T") (setq ts (cons c ts)) (setq ls (cons c ls)))))
+  (cond (ts (car ts)) ((cdr ls) (list "LL" (cadr (car ls)) x nil)) (t (car ls))))
+
+;; debug: an unpaired line ending on a wall face is handled as a single line,
+;; where touching = already connected = unchanged
+(defun wt:tx-dbg-touch (ek / hits)
+  (if *wt-debug*
+    (progn
+      (foreach c (wt:tx-conn ek) (if (wt:tx-paired-p c) (setq hits (cons c hits))))
+      (if hits
+        (wt:dbg (list "TX NOTE segment" (car ek) "P" (1+ (cadr ek)) "ends on wall face" hits
+                      "but has no wall partner (candidates" (cdr (assoc (car ek) *wt:tx-ptab*))
+                      ") -> single-line rules: touching = unchanged"))))))
+
+;; returns (repaired ambiguous)
+(defun wt:tx-line-phase (/ ek cands ch choices ts n amb pc s p q st host r)
+  (setq n 0 amb 0)
+  (foreach s *wt:tx-segs*
+    (if (and (not (member (car s) *wt:tx-erase*)) (not (wt:tx-paired-p (car s))))
+      (foreach side '(0 1)
+        (setq ek (list (car s) side))
+        (wt:tx-dbg-touch ek)
+        (if (and (not (assoc ek *wt:tx-moves*)) (not (wt:tx-conn ek)) (not (wt:tx-claimed-p ek))
+                 (setq cands (wt:tx-line-cands ek)))
+          (progn
+            (setq ch (wt:tx-choose cands))
+            (if (or (= (car ch) "AMBIG") (= (car (cadr ch)) "LL"))
+              (progn
+                (if (wt:tx-pt-in-field (wt:tx-end s side)) (setq amb (1+ amb)))
+                (wt:dbg (list "TX AMBIGUOUS ENDPOINT segment" (car s) "P" (1+ side) (wt:tx-end s side)))
+                (foreach c (if (= (car ch) "AMBIG") (cadr ch) (list (cadr ch)))
+                  (wt:dbg (list "  candidate" (car c) "point" (caddr c) "distance" (wt:fmt (cadr c)) "with" (cadddr c)))))
+              (setq choices (cons (cons ek (cadr ch)) choices))))))))
+  (setq choices (reverse choices))
+  (foreach c choices
+    (setq ch (cdr c))
+    (cond
+      ((assoc (car c) *wt:tx-moves*))
+      ((= (car ch) "L")
+       (if (and (wt:tx-pt-in-field (caddr ch))
+                (setq pc (cdr (assoc (cadddr ch) choices))) (= (car pc) "L")
+                (equal (cadddr pc) (car c)) (wt:peq (caddr pc) (caddr ch)))
+         (progn
+           (setq *wt:tx-moves* (cons (cons (car c) (caddr ch)) (cons (cons (cadddr ch) (caddr ch)) *wt:tx-moves*))
+                 n (1+ n))
+           (wt:dbg (list "TX L segment" (car (car c)) "P" (1+ (cadr (car c))) "+ segment" (car (cadddr ch))
+                         "P" (1+ (cadr (cadddr ch))) "-> intersection" (caddr ch))))
+         (wt:dbg (list "TX L endpoint" (car c) "partner does not agree, unchanged"))))
+      (t (setq ts (cons c ts)))))
+  ;; T: host must still contain the point after all planned moves
+  (foreach c (reverse ts)
+    (setq ch (cdr c) host (wt:tx-seg (cadddr ch))
+          p (cond ((cdr (assoc (list (car host) 0) *wt:tx-moves*))) ((cadr host)))
+          q (cond ((cdr (assoc (list (car host) 1) *wt:tx-moves*))) ((caddr host))))
+    (if (and (not (member (car host) *wt:tx-erase*)) (not (assoc (car c) *wt:tx-moves*))
+             (wt:tx-pt-in-field (caddr ch))
+             (wt:on-seg (caddr ch) p q))
+      (progn
+        (setq *wt:tx-moves* (cons (cons (car c) (caddr ch)) *wt:tx-moves*) n (1+ n))
+        (wt:dbg (list "TX T segment" (car (car c)) "P" (1+ (cadr (car c))) "-> host" (car host) "at" (caddr ch))))
+      (wt:dbg (list "TX T endpoint" (car c) "host changed by another repair, unchanged"))))
+  (list n amb))
+
+;; --- repair field (TX / TW window). nil = selection mode: everything eligible ---
+;; The field decides WHICH junctions may be repaired, never which part of a line exists.
+
+(setq *wt:tx-field* nil *wt:tx-nested* nil *wt:tx-adds* nil)
+
+(defun wt:tx-pt-in-field (p / r e)
+  (cond ((not *wt:tx-field*) t)
+        ((wt:pip p *wt:tx-field*) t)
+        (t
+         (setq e (last *wt:tx-field*))
+         (foreach c *wt:tx-field*
+           (if (<= (wt:seg-dist p e c) *wt:tx-tol-col*) (setq r t))
+           (setq e c))
+         r)))
+
+(defun wt:tx-seg-in-field (a b)
+  (cond ((not *wt:tx-field*) t)
+        ((wt:peq a b) (wt:tx-pt-in-field a))
+        (t (wt:tw-seg-near-field a b *wt:tx-field* *wt:tx-tol-col*))))
+
+(defun wt:tx-sum (pts / r) (setq r '(0.0 0.0)) (foreach p pts (setq r (wt:v+ r p))) r)
+
+;; junction locus of a planned candidate = centroid of its target and cut points
+(defun wt:tx-cand-in-field (c / pts)
+  (foreach mv (caddr c) (setq pts (cons (cdr mv) pts)))
+  (foreach ct (cadddr c) (setq pts (cons (cadr ct) (cons (caddr ct) pts))))
+  (if pts (wt:tx-pt-in-field (wt:v* (wt:tx-sum pts) (/ 1.0 (length pts)))) t))
+
+;; --- PLAN 4: wall-end caps (field mode only, after ALL junction planning) ---
+;; *wt:tx-adds* ((pa pb source-ename) ...) = new cap LINEs copying the source face's properties.
+
+;; final (planned) endpoint
+(defun wt:tx-fp (id side)
+  (cond ((cdr (assoc (list id side) *wt:tx-moves*))) ((wt:tx-end (wt:tx-seg id) side))))
+
+;; why face endpoint ek is NOT a free wall end in the final topology (nil = free).
+;; "LINE" = touches only unpaired lines (end left alone, an existing cap is kept).
+(defun wt:tx-end-reason (ek skip / p s r)
+  (setq s (wt:tx-seg (car ek)) p (wt:tx-fp (car ek) (cadr ek)))
+  (cond
+    ((assoc ek *wt:tx-moves*) "JUNCTION REPAIRED IN THIS RUN")
+    ((wt:tx-claimed-p ek) "CROSS JUNCTION")
+    (t
+     (foreach k *wt:tx-segs*
+       (if (and (not r) (/= (car k) (car s)) (not (member (car k) *wt:tx-erase*)) (not (member (car k) skip))
+                (>= (wt:tx-sin s k) *wt:tx-min-sin*)
+                (wt:on-seg p (wt:tx-fp (car k) 0) (wt:tx-fp (car k) 1)))
+         (setq r (if (wt:tx-paired-p (car k)) "WALL JUNCTION" "LINE"))))
+     r)))
+
+;; existing cap of the end pa-pb: ("EXACT" id) | ("NEAR" id side-at-pa side-at-pb) | "AMBIG" | nil.
+;; NEAR = an unpaired line on the pa-pb line, no longer than spacing + 2D, each end within D.
+(defun wt:tx-find-cap (pa pb faces sp / out a b uk ka)
+  (foreach k *wt:tx-segs*
+    (if (and (not (member (car k) faces)) (not (member (car k) *wt:tx-erase*)) (not (wt:tx-paired-p (car k))))
+      (progn
+        (setq a (wt:tx-fp (car k) 0) b (wt:tx-fp (car k) 1) uk (wt:tx-u k))
+        (cond
+          ((or (and (wt:peq a pa) (wt:peq b pb)) (and (wt:peq a pb) (wt:peq b pa)))
+           (setq out (cons (list "EXACT" (car k)) out)))
+          ((and (<= (abs (wt:cross uk (wt:v- pa a))) *wt:tx-tol-col*)
+                (<= (abs (wt:cross uk (wt:v- pb a))) *wt:tx-tol-col*)
+                (<= (wt:dist a b) (+ sp (* 2.0 *wt:tx-D*))))
+           (setq ka (if (<= (wt:dist a pa) (wt:dist b pa)) 0 1))
+           (if (and (<= (wt:dist (wt:tx-fp (car k) ka) pa) *wt:tx-D*)
+                    (<= (wt:dist (wt:tx-fp (car k) (- 1 ka)) pb) *wt:tx-D*))
+             (setq out (cons (list "NEAR" (car k) ka (- 1 ka)) out))))))))
+  (cond ((not out) nil)
+        ((not (cdr out)) (car out))
+        ((assoc "EXACT" out))
+        (t "AMBIG")))
+
+(defun wt:tx-dbg-cap (key free why cap act)
+  (wt:dbg (list "TX WALL END  wall faces" (car key) "/" (caddr key) "end P" (1+ (cadr key))
+                "free:" free (if why (strcat "reason: " why) "") "cap:" cap "action:" act)))
+
+;; Free end = both faces of a mutual pair end at the same station (within tol-col),
+;; neither end is part of a junction, and the end lies in the repair field.
+;; Missing cap -> create; misconnected cap -> normalize; cap at a junction end -> erase.
+;; Returns the number of cap changes.
+(defun wt:tx-cap-phase (/ n b u sp o sb pa pb faces c capid ra rb why key)
+  (setq n 0)
+  (foreach a *wt:tx-segs*
+    (foreach j (cdr (assoc (car a) *wt:tx-ptab*))
+      (if (and (< (car a) j) (wt:tx-pairp (car a) j)
+               (not (member (car a) *wt:tx-erase*)) (not (member j *wt:tx-erase*)))
+        (progn
+          (setq b (wt:tx-seg j) u (wt:tx-u a) sp (abs (wt:tx-off (cadr b) a)) faces (list (car a) j))
+          (foreach sa '(0 1)
+            (setq o (wt:tx-out a sa)
+                  sb (if (> (wt:dot (wt:tx-fp j 0) o) (wt:dot (wt:tx-fp j 1) o)) 0 1)
+                  pa (wt:tx-fp (car a) sa) pb (wt:tx-fp j sb) key (list (car a) sa j sb))
+            (if (and (<= (abs (wt:dot (wt:v- pa pb) u)) *wt:tx-tol-col*)
+                     (<= (abs (- (abs (wt:cross u (wt:v- pb pa))) sp)) *wt:tx-tol-col*)
+                     (wt:tx-pt-in-field (wt:v* (wt:v+ pa pb) 0.5)))
+              (progn
+                (setq c (wt:tx-find-cap pa pb faces sp)
+                      capid (if (listp c) (cadr c))
+                      ra (wt:tx-end-reason (list (car a) sa) (if capid (list capid)))
+                      rb (wt:tx-end-reason (list j sb) (if capid (list capid)))
+                      why (if ra ra rb))
+                (cond
+                  (why
+                   (if (and capid (/= why "LINE"))
+                     (progn
+                       (setq *wt:tx-erase* (cons capid *wt:tx-erase*) n (1+ n))
+                       (wt:tx-dbg-cap key "NO" why "YES" "ERASE STALE CAP"))
+                     (wt:tx-dbg-cap key "NO" why (if capid "YES" "NO") "NONE")))
+                  ((= c "AMBIG") (wt:tx-dbg-cap key "YES" nil "AMBIGUOUS" "NONE"))
+                  ((and c (= (car c) "EXACT")) (wt:tx-dbg-cap key "YES" nil "EXISTS" "NONE"))
+                  (c
+                   (if (wt:tx-plan-add (list "CAP" 0.0 (list (cons (list capid (caddr c)) pa) (cons (list capid (cadddr c)) pb))
+                                             nil nil))
+                     (progn (setq n (1+ n)) (wt:tx-dbg-cap key "YES" nil "MISCONNECTED" "NORMALIZE"))
+                     (wt:tx-dbg-cap key "YES" nil "MISCONNECTED" "NONE (conflict)")))
+                  (t
+                   (setq *wt:tx-adds* (cons (list pa pb (car (cadddr a))) *wt:tx-adds*) n (1+ n))
+                   (wt:tx-dbg-cap key "YES" nil "MISSING" "CREATE"))))))))))
+  n)
+
+;; --- MODIFY ---
+
+;; new LINE copying display properties of en, recorded
+(defun wt:tx-copy (en a b z / out)
+  (foreach g (entget en)
+    (if (member (car g) '(0 8 6 62 48 370 39 420 430 440 284 60 67 210)) (setq out (cons g out))))
+  (if (entmake (append (reverse out) (list (cons 10 (list (car a) (cadr a) z)) (cons 11 (list (car b) (cadr b) z)))))
+    (wt:pend-make (entlast))))
+
+;; apply the plan; returns number of entities changed/erased/created
+(defun wt:tx-apply (/ n p q u len pieces nw c1 c2 d o10 z a b sv)
+  (setq n 0)
+  (foreach s *wt:tx-segs*
+    (setq p (cond ((cdr (assoc (list (car s) 0) *wt:tx-moves*))) ((cadr s)))
+          q (cond ((cdr (assoc (list (car s) 1) *wt:tx-moves*))) ((caddr s)))
+          pieces nil)
+    (if (and (not (member (car s) *wt:tx-erase*)) (not (wt:peq p q)))
+      (progn
+        (setq u (wt:unit (wt:v- q p)) len (wt:dist p q) pieces (list (list 0.0 len)))
+        (foreach c *wt:tx-cuts*
+          (if (= (car c) (car s))
+            (progn
+              (setq c1 (wt:dot (wt:v- (cadr c) p) u) c2 (wt:dot (wt:v- (caddr c) p) u) nw nil)
+              (foreach pc pieces
+                (if (< (car pc) (- (min c1 c2) *wt:tol*)) (setq nw (cons (list (car pc) (min (cadr pc) (min c1 c2))) nw)))
+                (if (> (cadr pc) (+ (max c1 c2) *wt:tol*)) (setq nw (cons (list (max (car pc) (max c1 c2)) (cadr pc)) nw))))
+              (setq pieces (reverse nw)))))))
+    (setq pieces (mapcar '(lambda (pc) (list (wt:v+ p (wt:v* u (car pc))) (wt:v+ p (wt:v* u (cadr pc))))) pieces))
+    (setq sv (car (cadddr s)))
+    (foreach e (cdr (cadddr s)) (wt:pend-erase e) (setq n (1+ n)))
+    (if (not pieces)
+      (progn (wt:pend-erase sv) (setq n (1+ n)))
+      (progn
+        (setq d (entget sv) o10 (cdr (assoc 10 d)) z (if (caddr o10) (caddr o10) 0.0)
+              a (car (car pieces)) b (cadr (car pieces)))
+        (if (> (wt:dist (wt:pt2 o10) a) (wt:dist (wt:pt2 o10) b)) (setq a (cadr (car pieces)) b (car (car pieces))))
+        (if (not (and (wt:peq (wt:pt2 o10) a) (wt:peq (wt:pt2 (cdr (assoc 11 d))) b)))
+          (progn
+            (wt:pend-modify (subst (cons 11 (list (car b) (cadr b) z)) (assoc 11 d)
+                                   (subst (cons 10 (list (car a) (cadr a) z)) (assoc 10 d) d)))
+            (setq n (1+ n))))
+        (foreach pc (cdr pieces) (wt:tx-copy sv (car pc) (cadr pc) z) (setq n (1+ n))))))
+  (foreach ad *wt:tx-adds*
+    (setq d (entget (caddr ad)) o10 (cdr (assoc 10 d)) z (if (caddr o10) (caddr o10) 0.0))
+    (wt:tx-copy (caddr ad) (car ad) (cadr ad) z)
+    (setq n (1+ n)))
+  n)
+
+;; --- command driver ---
+
+;; READ + PLAN 1 + wall-pair analysis (no drawing change). gap = largest collinear
+;; gap merged (TX: D; TW analysis: touching only). Returns (snapshot merged-count).
+(defun wt:tx-prepare (ens gap / snap r)
+  (setq snap (wt:tx-snapshot ens)
+        *wt:tx-D* gap *wt:tx-W* (wt:cfg "TX_WALL_MAX")
+        *wt:tx-moves* nil *wt:tx-erase* nil *wt:tx-cuts* nil *wt:tx-claims* nil *wt:tx-adds* nil)
+  (setq r (wt:tx-merge (car snap)) *wt:tx-segs* (car r) *wt:tx-D* (wt:cfg "TX_CONNECT_DISTANCE"))
+  (wt:tx-build-ptab)
+  (list snap (cadr r)))
+
+;; enames -> repairs (one transaction unless *wt:tx-nested*); returns repaired junctions.
+;; With *wt:tx-field*: repairs only junctions in the field, and caps free wall ends there.
+(defun wt:tx-run (ens / pr snap r0 r1 r2 r3 merged nj amb nent quiet)
+  (setq quiet *wt:tx-nested* nj 0 r3 0
+        pr (wt:tx-prepare ens (wt:cfg "TX_CONNECT_DISTANCE")) snap (car pr) merged (cadr pr))
+  (wt:dbg (list "TX INPUT" (length (car snap)) "LINEs, D =" (wt:fmt *wt:tx-D*) "wall max =" (wt:fmt *wt:tx-W*)))
+  (if (and (> *wt:tx-nprot* 0) (not quiet))
+    (princ (strcat "\nTX: " (itoa *wt:tx-nprot*) " AKD wall line(s) left to the wall tools.")))
+  (if (and (> (cadr snap) 0) (not quiet))
+    (princ (strcat "\nTX: " (if (> (cadr snap) 1) (strcat (itoa (cadr snap)) " X-AXIS master lines") "X-AXIS master line")
+                   " skipped.")))
+  (if (car snap)
+    (progn
+      (if (not quiet) (princ "\nAnalyzing junctions..."))
+      (foreach s *wt:tx-segs*
+        (foreach j (cdr (assoc (car s) *wt:tx-ptab*))
+          (if (and (< (car s) j) (wt:tx-pairp (car s) j))
+            (wt:dbg (list "TX WALL PAIR" (car s) "/" j "spacing" (wt:fmt (abs (wt:tx-off (cadr (wt:tx-seg j)) s))))))))
+      (setq r0 (wt:tx-cross-phase) r1 (wt:tx-wall-phase) r2 (wt:tx-line-phase))
+      (if *wt:tx-field* (setq r3 (wt:tx-cap-phase)))
+      (setq nj (+ merged (car r0) (car r1) (car r2)) amb (+ (cadr r0) (cadr r1) (cadr r2)))
+      (if (not quiet) (wt:pend-begin))
+      (setq nent (wt:tx-apply))
+      (if (not quiet) (setq *wt:pending* nil))
+      (wt:dbg (list "TX RESULT collinear" merged "cross" (car r0) "wall" (car r1) "line" (car r2)
+                    "caps" r3 "ambiguous" amb "entities changed" nent))
+      (if *wt:tx-field* (wt:dbg (list "TX FIELD candidate junctions in field" (+ nj amb) "cap changes" r3)))
+      (if (not quiet)
+        (progn
+          (princ (strcat "\nTX: " (itoa nj) " junction(s) repaired."))
+          (if (> r3 0) (princ (strcat "\n" (itoa r3) " wall end cap(s) updated.")))
+          (if (> amb 0) (princ (strcat "\n" (itoa amb) " ambiguous junction(s) left unchanged.")))))))
+  (if (and (> (caddr snap) 0) (not quiet))
+    (princ (strcat "\n" (itoa (caddr snap)) " unsupported object(s) ignored.")))
+  (setq *wt:tx-segs* nil *wt:tx-ptab* nil *wt:tx-adds* nil)
+  nj)
+
+;; LINEs of the current space (not on AXIS_LAYER) within tol of the field polygon.
+;; Whole entities are collected; skipfn (e data p1 p2) may exclude lines.
+(defun wt:tx-collect (field tol skipfn / ss i e d a b out ax)
+  (setq ax (strcase (wt:cfg "AXIS_LAYER")))
+  (if (setq ss (ssget "_X" (list '(0 . "LINE") (cons 410 (getvar "CTAB")))))
+    (repeat (setq i (sslength ss))
+      (setq e (ssname ss (setq i (1- i))) d (entget e)
+            a (wt:pt2 (cdr (assoc 10 d))) b (wt:pt2 (cdr (assoc 11 d))))
+      (if (and (/= (strcase (cdr (assoc 8 d))) ax)
+               (wt:tw-seg-near-field a b field tol)
+               (not (and skipfn (apply skipfn (list e d a b)))))
+        (setq out (cons e out)))))
+  out)
+
+;; TX in a repair field: collect lines (context reach D + wall max), repair junctions in the field
+(defun wt:tx-field-run (field / ens n)
+  (setq *wt:tx-field* field
+        ens (wt:tx-collect field (+ (wt:cfg "TX_CONNECT_DISTANCE") (wt:cfg "TX_WALL_MAX")) nil))
+  (wt:dbg (list "TX FIELD corners" (car field) (caddr field) "LINEs collected" (length ens)))
+  (setq n (if ens (wt:tx-run ens) (progn (princ "\nTX: No lines in the repair area.") 0))
+        *wt:tx-field* nil)
+  n)
+
+;; TX: repair window (preselected LINEs are still accepted: selection mode, no capping)
+(defun c:TX (/ *error* ss i ens c1 c2)
+  (setq *error* wt:error *wt:tx-field* nil *wt:tx-nested* nil)
+  (if (setq ss (ssget "_I")) (sssetfirst nil nil))   ; before any command clears PickFirst
+  (wt:begin)
+  (cond
+    (ss
+     (repeat (setq i (sslength ss)) (setq ens (cons (ssname ss (setq i (1- i))) ens)))
+     (wt:tx-run ens))
+    ((and (setq c1 (getpoint "\nSpecify first corner of repair area: "))
+          (setq c2 (getcorner c1 "\nSpecify opposite corner: ")))
+     (wt:tx-field-run (wt:tw-field c1 c2))))
+  (setq *wt:tx-field* nil)
+  (wt:end))
+
+;;; ===================================================================
+;;; 21. WWD -- wall to distance (move ONE wall so a picked face is D from a picked face)
+;;; ===================================================================
+;;; Pick record (read-only, built before any change):
+;;;   (src id face-pt u other-pt owned-ents info jobs label)
+;;;   src    "AKD" | "GENERIC"
+;;;   id     AKD: wall (master p1 p2 thk pos); GENERIC: owned entity list
+;;;   face-pt / u   a point on / the direction of the PICKED face line
+;;;   other-pt      a point on the wall's other face (body side)
+;;;   info   (base u lo hi omin omax): footprint relative to the picked face line
+;;;   jobs   GENERIC: wall ends in a junction with the moving wall; squared after the
+;;;          move if they became free, so the TX cap phase can close them
+;;; Mutation: AKD -> the centerline master moves by the same vector as its faces, so it
+;;;           stays centred (stored as CENTER), through the EW/WW rebuild path.
+;;;           GENERIC -> owned faces + caps translated, then the shared TX solver
+;;;           cleans the old and the new footprint (nested: no prompts, one undo).
+
+(setq *wt:wwd-dist* nil)
+
+;; Pure. Translation of the moving wall: picked moving face through pm (direction u,
+;; other face through pb), picked reference face through pr, clear distance d >= 0.
+;; The moving face stays on its current side of the reference face (no mirroring);
+;; coincident faces separate away from the moving wall's body.
+(defun wt:wwd-vector (pm pr u pb d / n delta sg)
+  (setq n (wt:perp u) delta (- (wt:dot pr n) (wt:dot pm n))
+        sg (cond ((> delta *wt:tol*) 1.0)
+                 ((< delta (- *wt:tol*)) -1.0)
+                 ((> (wt:dot (wt:v- pb pm) n) 0.0) -1.0)
+                 (t 1.0)))
+  (wt:v* n (- delta (* sg d))))
+
+;; footprint polygon of info (base u lo hi omin omax), grown by m, shifted by v
+(defun wt:wwd-field (info m v / b u n lo hi o1 o2)
+  (setq b (wt:v+ (car info) v) u (cadr info) n (wt:perp u)
+        lo (- (caddr info) m) hi (+ (cadddr info) m) o1 (- (nth 4 info) m) o2 (+ (nth 5 info) m))
+  (list (wt:v+ b (wt:v+ (wt:v* u lo) (wt:v* n o1)))
+        (wt:v+ b (wt:v+ (wt:v* u hi) (wt:v* n o1)))
+        (wt:v+ b (wt:v+ (wt:v* u hi) (wt:v* n o2)))
+        (wt:v+ b (wt:v+ (wt:v* u lo) (wt:v* n o2)))))
+
+(defun wt:wwd-box (p m)
+  (list (wt:v+ p (list (- m) (- m))) (wt:v+ p (list m (- m))) (wt:v+ p (list m m)) (wt:v+ p (list (- m) m))))
+
+(defun wt:wwd-reach () (+ (wt:cfg "TX_CONNECT_DISTANCE") (wt:cfg "TX_WALL_MAX")))
+
+;; --- AKD face pick (existing EW / WWF ownership and side rules) ---
+;; -> record, message string, or nil when the line is not an AKD wall face
+(defun wt:wwd-akd (en q net / r w side o n p1 fo oo)
+  (setq r (wt:ew-resolve en q net (wt:pick-margin)))
+  (cond
+    ((= (car r) "AMBIG") "\nAmbiguous wall junction. Select closer to the wall segment.")
+    ((/= (car r) "OK") nil)
+    ((= (type (setq w (cadr r) side (wt:wwf-side en q w))) 'STR) side)
+    (t
+     (setq o (wt:w-offs w) n (wt:perp (wt:w-u w)) p1 (wt:w-p1 w)
+           fo (if (> side 0) (car o) (cadr o)) oo (if (> side 0) (cadr o) (car o)))
+     (list "AKD" w
+           (wt:v+ p1 (wt:v* n fo)) (wt:w-u w) (wt:v+ p1 (wt:v* n oo))
+           (list en)
+           (list (wt:v+ p1 (wt:v* n fo)) (wt:w-u w) 0.0 (wt:dist p1 (wt:w-p2 w))
+                 (min 0.0 (- oo fo)) (max 0.0 (- oo fo)))
+           nil
+           (list "master" (car w) "width" (wt:fmt (wt:w-thk w)) "position" (wt:w-pos w)
+                 "face" (if (> side 0) "LEFT" "RIGHT") "direction" (wt:w-u w))))))
+
+;; --- generic face pick (TX pairing + TW generic wall records) ---
+
+;; a parallel line at wall spacing overlaps s (pairing failed on a tie, not for lack of a partner)
+(defun wt:wwd-has-parallel (s / r iv o)
+  (foreach k *wt:tx-segs*
+    (if (and (not r) (/= (car k) (car s)) (< (wt:tx-sin s k) *wt:tx-tol-par*))
+      (progn
+        (setq o (abs (wt:tx-off (cadr k) s)) iv (wt:tx-iv k s))
+        (if (and (> o *wt:tx-tol-col*) (<= o *wt:tx-W*)
+                 (> (- (min (cadr iv) (wt:tx-len s)) (max (car iv) 0.0)) *wt:tol*))
+          (setq r t)))))
+  r)
+
+;; lines in field -> (seg rec recs lines) for the picked entity, or a message.
+;; Leaves the TX analysis state loaded; the caller clears it.
+(defun wt:wwd-gen-find (en field / ens s rec recs)
+  (setq ens (wt:tx-collect field (wt:wwd-reach) 'wt:tw-akd-line-p))
+  (wt:tx-prepare ens *wt:tol*)
+  (foreach k *wt:tx-segs* (if (member en (cadddr k)) (setq s k)))
+  (cond
+    ((not s) "\nCould not identify a wall from this line.")
+    ((member (car s) *wt:tx-nopair*) "\nSelect a wall side face, not an end cap.")
+    ((not (wt:tx-paired-p (car s)))
+     (if (wt:wwd-has-parallel s)
+       "\nAmbiguous wall face. Select a clearer wall face."
+       "\nCould not identify a double-line wall from this line."))
+    (t
+     (setq recs (wt:tw-gen-walls))
+     (foreach x recs (if (member (car s) (car x)) (setq rec x)))
+     (if rec
+       (list s rec recs
+             (mapcar '(lambda (e / d) (setq d (entget e))
+                        (list e (wt:pt2 (cdr (assoc 10 d))) (wt:pt2 (cdr (assoc 11 d)))))
+                     ens))
+       "\nAmbiguous wall face. Select a clearer wall face."))))
+
+;; p lies across another wall: between its faces, within reach of its extent
+;; (a crossing wall's own opening leaves p just beyond its face pieces)
+(defun wt:wwd-some-strip (p skip recs / r ref st off)
+  (foreach x recs
+    (if (and (not r) (not (member x skip)))
+      (progn
+        (setq ref (wt:tx-seg (nth 7 x)) st (wt:tx-sta p ref) off (wt:tx-off p ref))
+        (if (and (>= st (- (nth 9 x) (wt:cfg "TX_CONNECT_DISTANCE")))
+                 (<= st (+ (nth 10 x) (wt:cfg "TX_CONNECT_DISTANCE")))
+                 (>= off (- (min 0.0 (nth 8 x)) *wt:tx-tol-col*))
+                 (<= off (+ (max 0.0 (nth 8 x)) *wt:tx-tol-col*)))
+          (setq r t)))))
+  r)
+
+;; rec plus collinear same-width records continuing it through a junction (the gap
+;; between their ends lies inside a third wall), transitively
+(defun wt:wwd-continuations (rec recs / out grow ua lo1 hi1 lo2 hi2 mid)
+  (setq out (list rec) grow t)
+  (while grow
+    (setq grow nil)
+    (foreach r2 recs
+      (foreach r1 out
+        (setq ua (wt:tw-rec-u r1) mid nil)
+        (if (and (not (member r2 out))
+                 (< (abs (wt:cross ua (wt:tw-rec-u r2))) *wt:tx-tol-par*)
+                 (<= (abs (- (cadddr r1) (cadddr r2))) *wt:tx-tol-col*)
+                 (<= (abs (wt:cross ua (wt:v- (cadr r2) (cadr r1)))) *wt:tx-tol-col*))
+          (progn
+            (setq lo1 (wt:dot (cadr r1) ua) hi1 (wt:dot (caddr r1) ua)
+                  lo2 (min (wt:dot (cadr r2) ua) (wt:dot (caddr r2) ua))
+                  hi2 (max (wt:dot (cadr r2) ua) (wt:dot (caddr r2) ua)))
+            (cond ((> lo2 hi1) (setq mid (wt:v+ (caddr r1) (wt:v* ua (/ (- lo2 hi1) 2.0)))))
+                  ((> lo1 hi2) (setq mid (wt:v+ (cadr r1) (wt:v* ua (/ (- hi2 lo1) 2.0))))))
+            (if (and mid (wt:wwd-some-strip mid (list r1 r2) recs))
+              (setq out (append out (list r2)) grow t)))))))
+  out)
+
+;; extreme endpoint (point code ename) of entities along o
+(defun wt:wwd-extreme (ents o / best bk bp p d)
+  (foreach e ents
+    (if (setq d (entget e))
+      (foreach k '(10 11)
+        (setq p (wt:pt2 (cdr (assoc k d))))
+        (if (or (not best) (> (wt:dot p o) (+ (wt:dot best o) *wt:tol*)))
+          (setq best p bk k bp e)))))
+  (if best (list best bk bp)))
+
+;; pt lies on one of lines (ename p1 p2) whose entity is not in excl
+(defun wt:wwd-touch (pt lines excl / r)
+  (foreach l lines
+    (if (and (not r) (not (member (car l) excl)) (wt:on-seg pt (cadr l) (caddr l))) (setq r t)))
+  r)
+
+(defun wt:wwd-seg-ents (ids / out)
+  (foreach id ids (setq out (append out (cadddr (wt:tx-seg id)))))
+  out)
+
+(defun wt:wwd-not-in (a b / out) (foreach x a (if (not (member x b)) (setq out (cons x out)))) out)
+(defun wt:wwd-only (lines ents / out) (foreach l lines (if (member (car l) ents) (setq out (cons l out)))) out)
+
+;; footprint (lo hi omin omax) of segment ids relative to seg s
+(defun wt:wwd-extent (ids s / iv off lo hi om ox)
+  (foreach id ids
+    (setq iv (wt:tx-iv (wt:tx-seg id) s) off (wt:tx-off (cadr (wt:tx-seg id)) s))
+    (if (or (not lo) (< (car iv) lo)) (setq lo (car iv)))
+    (if (or (not hi) (> (cadr iv) hi)) (setq hi (cadr iv)))
+    (if (or (not om) (< off om)) (setq om off))
+    (if (or (not ox) (> off ox)) (setq ox off)))
+  (list lo hi (min 0.0 om) (max 0.0 ox)))
+
+(defun wt:wwd-group-ids (grp / ids) (foreach x grp (setq ids (append ids (car x)))) ids)
+
+;; -> record or message
+(defun wt:wwd-generic (en q / r s rec recs lines grp ids caps ents ext other res jobs xents mv e1 e2 sl)
+  (setq r (wt:wwd-gen-find en (wt:wwd-box q (wt:wwd-reach))))
+  (if (/= (type r) 'STR)
+    ;; pass 2: the whole wall footprint (faces may run far beyond the pick)
+    (progn
+      (setq s (car r) ext (wt:wwd-extent (wt:wwd-group-ids (wt:wwd-continuations (cadr r) (caddr r))) s))
+      (setq r (wt:wwd-gen-find en (wt:wwd-field (cons (cadr s) (cons (wt:tx-u s) ext)) (wt:wwd-reach) '(0.0 0.0))))))
+  (if (/= (type r) 'STR)
+    (progn
+      (setq s (car r) rec (cadr r) recs (caddr r) lines (cadddr r)
+            grp (wt:wwd-continuations rec recs) ids (wt:wwd-group-ids grp))
+      (foreach c (wt:tx-cap-like)
+        (if (and (member (cadr c) ids) (member (caddr c) ids)) (setq caps (cons (car c) caps))))
+      (setq ents (wt:wwd-seg-ents (append ids caps))
+            ext (wt:wwd-extent ids s)
+            other (if (member (car s) (nth 5 rec)) (nth 6 rec) (nth 5 rec)))
+      ;; wall ends in a junction with the moving wall
+      (foreach x recs
+        (setq xents (wt:wwd-seg-ents (car x)) mv (not (wt:wwd-not-in xents ents)))
+        (foreach o (list (wt:tw-rec-u x) (wt:v* (wt:tw-rec-u x) -1.0))
+          (setq e1 (wt:wwd-extreme (wt:wwd-seg-ents (nth 5 x)) o)
+                e2 (wt:wwd-extreme (wt:wwd-seg-ents (nth 6 x)) o)
+                sl (if mv lines (wt:wwd-only lines ents)))
+          (if (and e1 e2
+                   (or (wt:wwd-touch (car e1) sl (if mv ents xents))
+                       (wt:wwd-touch (car e2) sl (if mv ents xents))))
+            (setq jobs (cons (list (wt:wwd-seg-ents (nth 5 x)) (wt:wwd-seg-ents (nth 6 x)) o (if mv ents xents))
+                             jobs)))))
+      (setq res (list "GENERIC" ents (cadr s) (wt:tx-u s) (cadr (wt:tx-seg (car other)))
+                      ents (cons (cadr s) (cons (wt:tx-u s) ext)) jobs
+                      (list "faces" (car rec) "picked" en "width" (wt:fmt (cadddr rec))
+                            "direction" (wt:tx-u s) "caps" (length caps)))))
+    (setq res r))
+  (setq *wt:tx-segs* nil *wt:tx-ptab* nil)
+  res)
+
+;; any LINE pick -> record or message
+(defun wt:wwd-resolve (en q / d lyr r)
+  (setq d (entget en))
+  (cond
+    ((or (not d) (/= (cdr (assoc 0 d)) "LINE")) "\nSelect a wall face.")
+    ((= (setq lyr (strcase (cdr (assoc 8 d)))) (strcase (wt:cfg "AXIS_LAYER")))
+     "\nSelect a wall face, not the wall axis.")
+    (t
+     (setq *wt:tw-net* (wt:net-scan))
+     (if (wt:any-owned (list en (wt:pt2 (cdr (assoc 10 d))) (wt:pt2 (cdr (assoc 11 d)))) (wt:legacy-walls *wt:tw-net*))
+       (setq r "\nLegacy wall axis detected. Run WR first."))
+     (if (and (not r) (= lyr (strcase (wt:cfg "WALL_LAYER")))) (setq r (wt:wwd-akd en q *wt:tw-net*)))
+     (if (not r) (setq r (wt:wwd-generic en q)))
+     (setq *wt:tw-net* nil)
+     r)))
+
+(defun wt:wwd-same-p (m r)
+  (if (= (car m) (car r))
+    (if (= (car m) "AKD")
+      (eq (car (cadr m)) (car (cadr r)))
+      (wt:any-member (cadr m) (cadr r)))))
+
+(defun wt:wwd-dbg-rec (title rec)
+  (wt:dbg (list title "source" (car rec) (nth 8 rec))))
+
+;; after a generic move: a junction end that now touches nothing is squared (the
+;; shorter face extended to the longer one) so the TX cap phase can close it
+(defun wt:wwd-square (job lines / a b sa sb lo d)
+  (setq a (wt:wwd-extreme (car job) (caddr job)) b (wt:wwd-extreme (cadr job) (caddr job)))
+  (if (and a b
+           (not (wt:wwd-touch (car a) lines (cadddr job)))
+           (not (wt:wwd-touch (car b) lines (cadddr job))))
+    (progn
+      (setq sa (wt:dot (car a) (caddr job)) sb (wt:dot (car b) (caddr job)))
+      (if (and (> (abs (- sa sb)) *wt:tol*) (<= (abs (- sa sb)) (wt:wwd-reach)))
+        (progn
+          (setq lo (if (< sa sb) a b) d (entget (caddr lo)))
+          (wt:pend-modify
+            (subst (cons (cadr lo) (wt:tx-z3 (wt:v+ (car lo) (wt:v* (caddr job) (abs (- sa sb))))
+                                              (cdr (assoc (cadr lo) d))))
+                   (assoc (cadr lo) d) d))
+          (wt:dbg (list "WWD SQUARE freed wall end, face" (caddr lo) "extended" (wt:fmt (abs (- sa sb))))))))))
+
+;; 2D point p with the z of old 3D point
+(defun wt:tx-z3 (p old) (list (car p) (cadr p) (if (caddr old) (caddr old) 0.0)))
+
+(defun wt:wwd-lines (field / out d)
+  (foreach e (wt:tx-collect field (wt:wwd-reach) nil)
+    (setq d (entget e) out (cons (list e (wt:pt2 (cdr (assoc 10 d))) (wt:pt2 (cdr (assoc 11 d)))) out)))
+  out)
+
+;; shared TX cleanup (nested) in one field; AKD-owned linework excluded
+(defun wt:wwd-clean (field / ens n)
+  (setq *wt:tx-field* field
+        ens (wt:tx-collect field (wt:wwd-reach) 'wt:tw-akd-line-p)
+        n (if ens (wt:tx-run ens) 0)
+        *wt:tx-field* nil)
+  n)
+
+;; Validated records + distance -> transaction record, or a message (no change)
+(defun wt:wwd-execute (m r d / v w p1 p2 net en new rec f0 f1 lines n0 n1 dl)
+  (cond
+    ((>= (abs (wt:cross (cadddr m) (cadddr r))) *wt:tx-tol-par*)
+     (wt:dbg (list "WWD REJECT reason SELECTED WALLS NOT PARALLEL"))
+     "\nSelected walls are not parallel.\nWWD currently requires parallel walls.")
+    ((progn
+       (setq v (wt:wwd-vector (caddr m) (caddr r) (cadddr m) (nth 4 m) d))
+       (wt:wwd-dbg-rec "WWD MOVING WALL" m)
+       (wt:wwd-dbg-rec "WWD REFERENCE WALL" r)
+       (wt:dbg (list "WWD DISTANCE current signed separation"
+                     (wt:fmt (wt:dot (wt:v- (caddr r) (caddr m)) (wt:perp (cadddr m))))
+                     "requested" (wt:fmt d) "move amount" (wt:fmt (wt:len v)) "move vector" v))
+       (< (wt:len v) *wt:tol*))
+     "\nWall is already at that distance.")
+    ((= (car m) "AKD")
+     (setq w (cadr m) p1 (wt:v+ (wt:w-p1 w) v) p2 (wt:v+ (wt:w-p2 w) v) net (wt:net-scan))
+     (if (and (setq en (wt:master-at p1 p2 (car net))) (wt:wall-from-master en (cadr net)))
+       "\nA wall already exists at that position."
+       (progn
+         (wt:pend-begin)
+         (wt:rebuild nil (list w))                       ; old location: EW path
+         (setq en (wt:pend-make (wt:mk-line p1 p2 (wt:cfg "AXIS_LAYER"))))
+         (setq new (wt:rebuild (list (list en p1 p2 (wt:w-thk w) "CENTER")) nil))   ; new location: WW path
+         (foreach nw new (wt:reg-add (car nw) (wt:w-thk nw) "CENTER"))
+         (wt:dbg (list "WWD AKD master moved" (car w) "->" en "spans" (length new)))
+         (setq rec *wt:pending* *wt:pending* nil)
+         rec)))
+    (t
+     (setq f0 (wt:wwd-field (nth 6 m) (wt:cfg "TX_CONNECT_DISTANCE") '(0.0 0.0))
+           f1 (wt:wwd-field (nth 6 m) (wt:cfg "TX_CONNECT_DISTANCE") v))
+     (wt:pend-begin)
+     (setq *wt:tx-nested* t *wt:tw-net* (wt:net-scan))
+     (foreach e (cadr m)
+       (setq dl (entget e))
+       (wt:pend-modify
+         (subst (cons 11 (wt:tx-z3 (wt:v+ (wt:pt2 (cdr (assoc 11 dl))) v) (cdr (assoc 11 dl)))) (assoc 11 dl)
+                (subst (cons 10 (wt:tx-z3 (wt:v+ (wt:pt2 (cdr (assoc 10 dl))) v) (cdr (assoc 10 dl)))) (assoc 10 dl) dl))))
+     (setq lines (append (wt:wwd-lines f0) (wt:wwd-lines f1)))
+     (foreach job (nth 7 m) (wt:wwd-square job lines))
+     (setq n0 (wt:wwd-clean f0) n1 (wt:wwd-clean f1))
+     (wt:dbg (list "WWD CLEANUP old field" (car f0) (caddr f0) "new field" (car f1) (caddr f1)
+                   "old junctions repaired" n0 "new junctions repaired" n1))
+     (setq *wt:tx-nested* nil *wt:tw-net* nil rec *wt:pending* *wt:pending* nil)
+     rec)))
+
+;; non-interactive driver (also used by tests): picks + distance -> record or message
+(defun wt:wwd-run (e1 q1 e2 q2 d / m r)
+  (setq m (wt:wwd-resolve e1 q1))
+  (cond ((= (type m) 'STR) m)
+        ((= (type (setq r (wt:wwd-resolve e2 q2))) 'STR) r)
+        ((wt:wwd-same-p m r) "\nMoving wall and reference wall must be different walls.")
+        ((< d 0) "\nDistance must be zero or greater.")
+        (t (wt:wwd-execute m r d))))
+
+;; face pick loop -> record, or nil on Enter/Esc
+(defun wt:wwd-select (msg moving / e res out done)
+  (while (not done)
+    (setvar "ERRNO" 0)
+    (setq e (entsel msg))
+    (cond
+      ((not e) (if (/= (getvar "ERRNO") 7) (setq done t)))
+      ((= (type (setq res (wt:wwd-resolve (car e) (wt:pt2 (trans (cadr e) 1 0))))) 'STR)
+       (wt:dbg (list "WWD REJECT" res))
+       (princ res))
+      ((and moving (wt:wwd-same-p moving res))
+       (princ "\nMoving wall and reference wall must be different walls."))
+      (t (setq out res done t))))
+  out)
+
+(defun wt:wwd-distance (def / v done)
+  (while (not done)
+    (setq v (getdist (strcat "\nEnter distance <" (wt:fmt def) ">: ")))
+    (cond ((not v) (setq v def done t))
+          ((< v 0) (princ "\nDistance must be zero or greater."))
+          (t (setq done t))))
+  (float v))
+
+(defun c:WWD (/ *error* m r d res)
+  (setq *error* wt:error)
+  (wt:begin)
+  (if (not *wt:wwd-dist*) (setq *wt:wwd-dist* 1200.0))
+  (if (and (setq m (wt:wwd-select "\nSelect wall face to move: " nil))
+           (setq r (wt:wwd-select "\nSelect reference wall face: " m))
+           (setq d (wt:wwd-distance *wt:wwd-dist*)))
+    (if (= (type (setq res (wt:wwd-execute m r d))) 'STR)
+      (princ res)
+      (progn
+        (setq *wt:wwd-dist* d)
+        (princ (strcat "\nWall adjusted to " (wt:fmt d) ".")))))
+  (wt:end))
+
+;;; ===================================================================
+;;; 22. WWE -- wall extend (extend ONE wall end to ONE picked target wall face)
+;;; ===================================================================
+;;; Moving record = assoc list ("KEY" . value):
+;;;   SRC "AKD"|"GENERIC", END 0|1, PEXT / PFIX axis ends, O outward unit,
+;;;   OWNED entities, CONN connected-to-other-wall flag, LABEL
+;;;   AKD:     W wall
+;;;   GENERIC: SP1 SU (picked face line), LO HI OMIN OMAX (footprint on it),
+;;;            SIDEA SIDEB face entities, ENDCAPS caps at the selected end
+;;; Target = WWD pick record (wt:wwd-resolve).
+;;; EXTEND ONLY: never shortens, never moves the target, never moves the other end.
+
+(defun wt:wwe-g (rec k) (cdr (assoc k rec)))
+
+;; --- moving wall: AKD (side faces and caps both resolve through EW ownership) ---
+(defun wt:wwe-akd (en q net / r w u len st end pe pf o conn)
+  (setq r (wt:ew-resolve en q net (wt:pick-margin)))
+  (cond
+    ((= (car r) "AMBIG") "\nAmbiguous wall junction. Select farther from the junction.")
+    ((/= (car r) "OK") nil)
+    (t
+     (setq w (cadr r) u (wt:w-u w) len (wt:dist (wt:w-p1 w) (wt:w-p2 w))
+           st (wt:dot (wt:v- q (wt:w-p1 w)) u)
+           end (if (< st (/ len 2.0)) 0 1)
+           pe (if (= end 0) (wt:w-p1 w) (wt:w-p2 w))
+           pf (if (= end 0) (wt:w-p2 w) (wt:w-p1 w))
+           o (wt:unit (wt:v- pe pf)))
+     (foreach m (car net)
+       (if (and (not (eq (car m) (car w))) (wt:on-seg pe (cadr m) (caddr m))) (setq conn (cons (car m) conn))))
+     (list (cons "SRC" "AKD") (cons "W" w) (cons "END" end) (cons "PEXT" pe) (cons "PFIX" pf)
+           (cons "O" o) (cons "OWNED" (list (car w))) (cons "CONN" conn)
+           (cons "LABEL" (list "master" (car w) "width" (wt:fmt (wt:w-thk w)) "pick station" (wt:fmt st)
+                               "selected end" (if (= end 0) "END A" "END B") "current end" pe "direction" o))))))
+
+;; --- moving wall: GENERIC (a cap pick resolves to the face it closes; its end is selected) ---
+(defun wt:wwe-generic (en q / r s rec recs lines ids caps ext ob sa sb st end o u base pe pf e1 e2
+                          owned endcaps res face k mid)
+  (setq r (wt:wwd-gen-find en (wt:wwd-box q (wt:wwd-reach))))
+  (if (equal r "\nSelect a wall side face, not an end cap.")   ; cap pick -> the wall it closes
+    (progn
+      (foreach c (wt:tx-cap-like)
+        (if (and (not face) (member en (cadddr (wt:tx-seg (car c)))))
+          (setq face (car (cadddr (wt:tx-seg (cadr c)))))))
+      (setq *wt:tx-segs* nil *wt:tx-ptab* nil)
+      (if face (setq r (wt:wwd-gen-find face (wt:wwd-box q (wt:wwd-reach))) en face)
+               (setq r "\nCould not identify the wall closed by this end cap."))))
+  (if (/= (type r) 'STR)
+    (progn   ; pass 2: whole wall footprint
+      (setq s (car r) ext (wt:wwd-extent (wt:wwd-group-ids (wt:wwd-continuations (cadr r) (caddr r))) s))
+      (setq r (wt:wwd-gen-find en (wt:wwd-field (cons (cadr s) (cons (wt:tx-u s) ext)) (wt:wwd-reach) '(0.0 0.0))))))
+  (if (/= (type r) 'STR)
+    (progn
+      (setq s (car r) rec (cadr r) recs (caddr r) lines (cadddr r) u (wt:tx-u s)
+            ids (wt:wwd-group-ids (wt:wwd-continuations rec recs))
+            ext (wt:wwd-extent ids s)
+            ob (if (< (caddr ext) (- *wt:tx-tol-col*)) (caddr ext) (cadddr ext)))
+      (foreach id ids
+        (if (<= (abs (wt:tx-off (cadr (wt:tx-seg id)) s)) *wt:tx-tol-col*)
+          (setq sa (append sa (cadddr (wt:tx-seg id))))
+          (setq sb (append sb (cadddr (wt:tx-seg id))))))
+      (foreach c (wt:tx-cap-like)
+        (if (and (member (cadr c) ids) (member (caddr c) ids)) (setq caps (cons (car c) caps))))
+      (setq st (wt:tx-sta q s)
+            end (if (< (- st (car ext)) (- (cadr ext) st)) 0 1)
+            o (if (= end 1) u (wt:v* u -1.0))
+            base (wt:v+ (cadr s) (wt:v* (wt:perp u) (/ ob 2.0)))
+            pe (wt:v+ base (wt:v* u (if (= end 1) (cadr ext) (car ext))))
+            pf (wt:v+ base (wt:v* u (if (= end 1) (car ext) (cadr ext))))
+            owned (append sa sb (wt:wwd-seg-ents caps)))
+      (foreach k caps
+        (setq mid (wt:v* (wt:v+ (cadr (wt:tx-seg k)) (caddr (wt:tx-seg k))) 0.5))
+        (if (<= (abs (wt:dot (wt:v- mid pe) o)) (wt:cfg "TX_CONNECT_DISTANCE"))
+          (setq endcaps (append endcaps (cadddr (wt:tx-seg k))))))
+      (setq e1 (wt:wwd-extreme sa o) e2 (wt:wwd-extreme sb o))
+      (setq res (list (cons "SRC" "GENERIC") (cons "END" end) (cons "PEXT" pe) (cons "PFIX" pf) (cons "O" o)
+                      (cons "OWNED" owned)
+                      (cons "CONN" (or (wt:wwd-touch (car e1) lines owned) (wt:wwd-touch (car e2) lines owned)))
+                      (cons "SP1" (cadr s)) (cons "SU" u)
+                      (cons "LO" (car ext)) (cons "HI" (cadr ext)) (cons "OMIN" (caddr ext)) (cons "OMAX" (cadddr ext))
+                      (cons "SIDEA" sa) (cons "SIDEB" sb) (cons "ENDCAPS" endcaps)
+                      (cons "LABEL" (list "faces" (car rec) "picked" en "width" (wt:fmt (abs ob))
+                                          "pick station" (wt:fmt st) "selected end" (if (= end 0) "END A" "END B")
+                                          "current end" pe "direction" o "end caps" (length endcaps))))))
+    (setq res r))
+  (setq *wt:tx-segs* nil *wt:tx-ptab* nil)
+  res)
+
+(defun wt:wwe-resolve (en q / d lyr r)
+  (setq d (entget en))
+  (cond
+    ((or (not d) (/= (cdr (assoc 0 d)) "LINE")) "\nSelect a wall.")
+    ((= (setq lyr (strcase (cdr (assoc 8 d)))) (strcase (wt:cfg "AXIS_LAYER")))
+     "\nSelect a wall face, not the wall axis.")
+    (t
+     (setq *wt:tw-net* (wt:net-scan))
+     (if (wt:any-owned (list en (wt:pt2 (cdr (assoc 10 d))) (wt:pt2 (cdr (assoc 11 d)))) (wt:legacy-walls *wt:tw-net*))
+       (setq r "\nLegacy wall axis detected. Run WR first."))
+     (if (and (not r) (= lyr (strcase (wt:cfg "WALL_LAYER")))) (setq r (wt:wwe-akd en q *wt:tw-net*)))
+     (if (not r) (setq r (wt:wwe-generic en q)))
+     (setq *wt:tw-net* nil)
+     r)))
+
+(defun wt:wwe-same-p (m tg)
+  (if (= (wt:wwe-g m "SRC") (car tg))
+    (if (= (car tg) "AKD")
+      (eq (car (wt:wwe-g m "W")) (car (cadr tg)))
+      (wt:any-member (wt:wwe-g m "OWNED") (cadr tg)))))
+
+(defun wt:wwe-reject (why msg) (wt:dbg (list "WWE REJECT reason" why)) msg)
+
+;; Pure classification. -> (x d) or a message.
+;; AKD -> AKD: the wall-level target is the target MASTER (AKD junctions are master to
+;; master; the rebuild terminates the faces on the picked side). Otherwise the picked face line.
+(defun wt:wwe-target (m tg / o pe akd tw lp lu x d len st lo hi)
+  (setq o (wt:wwe-g m "O") pe (wt:wwe-g m "PEXT")
+        akd (and (= (wt:wwe-g m "SRC") "AKD") (= (car tg) "AKD")) tw (cadr tg))
+  (if akd
+    (setq lp (wt:w-p1 tw) lu (wt:w-u tw) lo 0.0 hi (wt:dist (wt:w-p1 tw) (wt:w-p2 tw)))
+    (setq lp (car (nth 6 tg)) lu (cadr (nth 6 tg)) lo (caddr (nth 6 tg)) hi (cadddr (nth 6 tg))))
+  (setq len (wt:dist pe (wt:wwe-g m "PFIX")))
+  (cond
+    ((or (< (abs (wt:cross o lu)) *wt:tx-min-sin*) (not (setq x (wt:xline pe o lp lu))))
+     (wt:wwe-reject "TARGET PARALLEL" "\nTarget face is parallel to the wall.\nCannot determine an extension point."))
+    ((progn (setq d (wt:dot (wt:v- x pe) o) st (wt:dot (wt:v- x lp) lu)) nil))
+    ((<= d (- *wt:tol* len))
+     (wt:wwe-reject "TARGET BEHIND SELECTED END" "\nTarget is behind the selected wall end.\nUse EW to shorten the wall."))
+    ((< d (- *wt:tol*))
+     (wt:wwe-reject "WALL ALREADY BEYOND TARGET" "\nWall already extends beyond target.\nUse EW to shorten the wall."))
+    ((or (< st (- lo (wt:cfg "TX_CONNECT_DISTANCE"))) (> st (+ hi (wt:cfg "TX_CONNECT_DISTANCE"))))
+     (wt:wwe-reject "TARGET EXTENT NOT REACHED" "\nExtension does not reach the selected target wall."))
+    (t (list x d))))
+
+;; axis path pe -> x crosses another wall (lines / masters not owned by either wall)
+;; every master (AKD) / line (GENERIC) the axis or face paths pe -> x cross, excluding both walls
+(defun wt:wwe-path-hits (m tg x / o a b r excl)
+  (setq o (wt:wwe-g m "O"))
+  (if (= (wt:wwe-g m "SRC") "AKD")
+    (progn
+      (setq a (wt:v+ (wt:wwe-g m "PEXT") (wt:v* o *wt:tx-tol-col*)) b (wt:v- x (wt:v* o *wt:tx-tol-col*)))
+      (if (> (wt:dot (wt:v- b a) o) 0.0)
+        (foreach mm (car (wt:net-scan))
+          (if (and (not (member (car mm) r)) (not (eq (car mm) (car (wt:wwe-g m "W"))))
+                   (not (and (= (car tg) "AKD") (eq (car mm) (car (cadr tg)))))
+                   (wt:seg-touch a b (cadr mm) (caddr mm)))
+            (setq r (cons (car mm) r))))))
+    (progn
+      (setq excl (append (wt:wwe-g m "OWNED") (cadr tg)))
+      (foreach side (list (wt:wwe-g m "SIDEA") (wt:wwe-g m "SIDEB"))
+        (setq a (car (wt:wwd-extreme side o))
+              b (wt:v+ a (wt:v* o (- (wt:dot (wt:v- x a) o) *wt:tx-tol-col*)))
+              a (wt:v+ a (wt:v* o *wt:tx-tol-col*)))
+        (if (> (wt:dot (wt:v- b a) o) 0.0)
+          (foreach l (wt:wwd-lines (list a b (wt:v+ b (wt:v* (wt:perp o) 0.001)) (wt:v+ a (wt:v* (wt:perp o) 0.001))))
+            (if (and (not (member (car l) r)) (not (member (car l) excl)) (wt:seg-touch a b (cadr l) (caddr l)))
+              (setq r (cons (car l) r))))))))
+  (reverse r))
+
+;; first entity crossing the extension path (kept for callers of the V1 rule)
+(defun wt:wwe-obstructed (m tg x) (car (wt:wwe-path-hits m tg x)))
+
+;;; --- connected start end: old-node classification and extension corridor ---
+;;; Old node (before any change): FREE | CAP | L | T, or a refusal for COLLINEAR,
+;;; COMPLEX (2+ walls / ambiguous) and UNSUPPORTED (unrecognised linework).
+;;; Corridor: every wall crossed between the end and the target must be a recognised,
+;;; non-parallel wall the moving wall passes completely (more than D beyond its far
+;;; face; an intermediate wall must also continue D past both moving faces). The final
+;;; L / T / CROSS geometry is left to the rebuild (AKD) or the TX solver (GENERIC).
+
+(defun wt:wwe-topo-reject (why)
+  (wt:wwe-reject (strcat "OLD JUNCTION " why)
+    (cond ((= why "COLLINEAR")
+           "\nSelected wall end is part of a collinear continuation.\nConnected collinear extension is not supported yet.")
+          ((= why "COMPLEX") "\nSelected wall end is part of a complex or ambiguous junction. No change.")
+          (t "\nSelected wall end touches unrecognised linework. No change."))))
+
+;; AKD: masters touching the selected master end
+(defun wt:wwe-topo-akd (m / w pe net ts mm w2 bad)
+  (setq w (wt:wwe-g m "W") pe (wt:wwe-g m "PEXT") net *wt:tw-net*)
+  (foreach e (wt:wwe-g m "CONN")
+    (setq mm (assoc e (car net)))
+    (cond ((or (not mm) (not (setq w2 (wt:wall-from-master mm (cadr net))))) (setq bad "UNSUPPORTED"))
+          ((< (abs (wt:cross (wt:w-u w) (wt:w-u w2))) *wt:tx-min-sin*) (if (not bad) (setq bad "COLLINEAR")))
+          (t (setq ts (cons w2 ts)))))
+  (foreach a ts
+    (foreach b ts
+      (if (or (>= (abs (wt:cross (wt:w-u a) (wt:w-u b))) *wt:tx-tol-par*)
+              (> (abs (wt:cross (wt:w-u a) (wt:v- (wt:w-p1 b) (wt:w-p1 a)))) *wt:tol*))
+        (if (not bad) (setq bad "COMPLEX")))))
+  (cond (bad (wt:wwe-topo-reject bad))
+        ((not ts) (list "FREE"))
+        ((cdr (cdr ts)) (wt:wwe-topo-reject "COMPLEX"))
+        ((cdr ts) (list "T" ts))                                    ; host split at the node
+        ((or (wt:peq pe (wt:w-p1 (car ts))) (wt:peq pe (wt:w-p2 (car ts)))) (list "L" ts))
+        (t (list "T" ts))))
+
+;; generic walls and all lines in a field -> ((ents u face1-pt face2-pt axis-p1 axis-p2 width) ...) lines
+(defun wt:wwe-scan (field / ens out lines d)
+  (setq ens (wt:tx-collect field (wt:wwd-reach) 'wt:tw-akd-line-p))
+  (if ens
+    (progn
+      (wt:tx-prepare ens *wt:tol*)
+      (foreach r (wt:tw-gen-walls)
+        (setq out (cons (list (wt:wwd-seg-ents (car r)) (wt:tw-rec-u r)
+                              (cadr (wt:tx-seg (car (nth 5 r)))) (cadr (wt:tx-seg (car (nth 6 r))))
+                              (cadr r) (caddr r) (cadddr r))
+                        out)))
+      (setq *wt:tx-segs* nil *wt:tx-ptab* nil)))
+  (foreach e (wt:tx-collect field (wt:wwd-reach) nil)
+    (setq d (entget e) lines (cons (list e (wt:pt2 (cdr (assoc 10 d))) (wt:pt2 (cdr (assoc 11 d)))) lines)))
+  (list (reverse out) lines))
+
+(defun wt:wwe-rec-of (e recs / r) (foreach x recs (if (and (not r) (member e (car x))) (setq r x))) r)
+
+;; the moving wall's two face lines: a point on each (direction O)
+(defun wt:wwe-faces (m)
+  (list (car (wt:wwd-extreme (wt:wwe-g m "SIDEA") (wt:wwe-g m "O")))
+        (car (wt:wwd-extreme (wt:wwe-g m "SIDEB") (wt:wwe-g m "O")))))
+
+;; scan wall r continues more than D beyond both moving face lines
+(defun wt:wwe-through-p (m r / o fs len s1 s2)
+  (setq o (wt:wwe-g m "O") fs (wt:wwe-faces m) len (wt:dist (nth 4 r) (nth 5 r)))
+  (if (>= (abs (wt:cross o (cadr r))) *wt:tx-min-sin*)
+    (progn
+      (setq s1 (wt:dot (wt:v- (wt:xline (car fs) o (nth 4 r) (cadr r)) (nth 4 r)) (cadr r))
+            s2 (wt:dot (wt:v- (wt:xline (cadr fs) o (nth 4 r) (cadr r)) (nth 4 r)) (cadr r)))
+      (and (> (- (min s1 s2) (wt:cfg "TX_CONNECT_DISTANCE")) 0.0)
+           (< (+ (max s1 s2) (wt:cfg "TX_CONNECT_DISTANCE")) len)))))
+
+;; station (along O) of scan wall r's farther face on the moving axis
+(defun wt:wwe-far (m r / o pe)
+  (setq o (wt:wwe-g m "O") pe (wt:wwe-g m "PEXT"))
+  (max (wt:dot (wt:xline pe o (caddr r) (cadr r)) o) (wt:dot (wt:xline pe o (cadddr r) (cadr r)) o)))
+
+;; GENERIC: walls whose lines touch the selected face ends
+(defun wt:wwe-topo-generic (m / sc recs lines o e1 e2 owned ps bad r)
+  (setq sc (wt:wwe-scan (wt:wwd-box (wt:wwe-g m "PEXT") (wt:wwd-reach))) recs (car sc) lines (cadr sc)
+        o (wt:wwe-g m "O") owned (wt:wwe-g m "OWNED")
+        e1 (car (wt:wwe-faces m)) e2 (cadr (wt:wwe-faces m)))
+  (foreach l lines
+    (if (and (not (member (car l) owned))
+             (or (wt:on-seg e1 (cadr l) (caddr l)) (wt:on-seg e2 (cadr l) (caddr l))))
+      (if (setq r (wt:wwe-rec-of (car l) recs))
+        (if (not (member r ps)) (setq ps (cons r ps)))
+        (setq bad "UNSUPPORTED"))))
+  (cond (bad (wt:wwe-topo-reject bad))
+        ((not ps) (list (if (wt:wwe-g m "ENDCAPS") "CAP" "FREE")))
+        ((cdr ps) (wt:wwe-topo-reject "COMPLEX"))
+        ((< (abs (wt:cross o (cadr (car ps)))) *wt:tx-min-sin*) (wt:wwe-topo-reject "COLLINEAR"))
+        ((wt:wwe-through-p m (car ps)) (list "T" ps))
+        (t (list "L" ps))))
+
+;; -> (type partners) or a refusal message. No drawing change.
+(defun wt:wwe-old-topology (m / res)
+  (setq *wt:tw-net* (wt:net-scan)
+        res (if (= (wt:wwe-g m "SRC") "AKD") (wt:wwe-topo-akd m) (wt:wwe-topo-generic m))
+        *wt:tw-net* nil)
+  (if (/= (type res) 'STR)
+    (wt:dbg (list "WWE START TOPOLOGY selected end" (if (= (wt:wwe-g m "END") 0) "END A" "END B")
+                  "old topology" (car res) "old partners" (length (cadr res))
+                  "moving role" (cond ((= (car res) "T") "BRANCH") ((= (car res) "L") "CORNER") (t "FREE END")))))
+  res)
+
+(defun wt:wwe-partner-p (r topo / hit)
+  (foreach p (cadr topo) (if (and (listp (car p)) (wt:any-member (car r) (car p))) (setq hit t)))
+  hit)
+
+;; AKD: ordinary (non-AKD) linework across the axis path
+(defun wt:wwe-akd-path-generic (m x / o a b r d n)
+  (setq o (wt:wwe-g m "O") n (wt:perp o)
+        a (wt:v+ (wt:wwe-g m "PEXT") (wt:v* o *wt:tx-tol-col*)) b (wt:v- x (wt:v* o *wt:tx-tol-col*)))
+  (if (> (wt:dot (wt:v- b a) o) 0.0)
+    (foreach e (wt:tx-collect (list a b (wt:v+ b (wt:v* n 0.001)) (wt:v+ a (wt:v* n 0.001))) (wt:wwd-reach) 'wt:tw-akd-line-p)
+      (setq d (entget e))
+      (if (and (not r) (wt:seg-touch a b (wt:pt2 (cdr (assoc 10 d))) (wt:pt2 (cdr (assoc 11 d))))) (setq r e))))
+  r)
+
+;; -> ("OK" intermediate-count) or a refusal message. No drawing change.
+(defun wt:wwe-corridor (m tg x topo / o hits n bad net mm w2 xm st len sc recs r parts dd lp)
+  (setq *wt:tw-net* (wt:net-scan) o (wt:wwe-g m "O") n 0 hits (wt:wwe-path-hits m tg x))
+  (if (= (wt:wwe-g m "SRC") "AKD")
+    (progn
+      (setq net *wt:tw-net*)
+      (foreach e hits
+        (setq mm (assoc e (car net)))
+        (cond
+          (bad)
+          ((or (not (setq w2 (wt:wall-from-master mm (cadr net))))
+               (< (abs (wt:cross o (wt:w-u w2))) *wt:tx-min-sin*))
+           (setq bad "UNSUPPORTED"))
+          (t
+           (setq xm (wt:xline (wt:wwe-g m "PEXT") o (wt:w-p1 w2) (wt:w-u w2))
+                 st (wt:dot (wt:v- xm (wt:w-p1 w2)) (wt:w-u w2)) len (wt:dist (wt:w-p1 w2) (wt:w-p2 w2)))
+           (if (or (< st (wt:cfg "TX_CONNECT_DISTANCE")) (> st (- len (wt:cfg "TX_CONNECT_DISTANCE")))
+                   (<= (wt:dot (wt:v- x xm) o) (+ (wt:cfg "TX_CONNECT_DISTANCE") (/ (wt:w-thk w2) 2.0))))
+             (setq bad "PARTIAL")
+             (progn
+               (setq n (1+ n))
+               (wt:dbg (list "WWE EXTENSION PATH intermediate master" e "VALID CROSS")))))))
+      ;; the old L / T partner sits at the start of the path: the wall must pass it by more than D
+      (if (and (not bad) (member (car topo) '("L" "T"))
+               (<= (wt:dot (wt:v- x (wt:wwe-g m "PEXT")) o)
+                   (+ (wt:cfg "TX_CONNECT_DISTANCE") (/ (wt:w-thk (car (cadr topo))) 2.0))))
+        (setq bad "PARTIAL"))
+      (if (and (not bad) (wt:wwe-akd-path-generic m x)) (setq bad "MIXED")))
+    (progn
+      (setq sc (wt:wwe-scan (wt:wwe-field m x)) recs (car sc))
+      (foreach e hits
+        (setq r (wt:wwe-rec-of e recs))
+        (cond
+          (bad)
+          ((not r)
+           (setq dd (entget e) lp (list e (wt:pt2 (cdr (assoc 10 dd))) (wt:pt2 (cdr (assoc 11 dd)))))
+           (setq bad (if (and (= (strcase (cdr (assoc 8 dd))) (strcase (wt:cfg "WALL_LAYER")))
+                              (wt:face-owners lp *wt:tw-net*))
+                       "MIXED" "UNSUPPORTED")))
+          ((< (abs (wt:cross o (cadr r))) *wt:tx-min-sin*) (setq bad "UNSUPPORTED"))
+          ((member r parts))
+          ((<= (- (wt:dot x o) (wt:wwe-far m r)) (wt:cfg "TX_CONNECT_DISTANCE")) (setq bad "PARTIAL"))
+          ((wt:wwe-partner-p r topo) (setq parts (cons r parts)))
+          ((not (wt:wwe-through-p m r)) (setq bad "PARTIAL"))
+          (t (setq parts (cons r parts) n (1+ n))
+             (wt:dbg (list "WWE EXTENSION PATH intermediate wall" (car r) "VALID CROSS")))))))
+  (setq *wt:tw-net* nil)
+  (cond
+    ((= bad "MIXED")
+     (wt:wwe-reject "MIXED AKD / GENERIC JUNCTION" "\nMixed AKD / ordinary wall junctions are not supported yet. No change."))
+    ((= bad "PARTIAL")
+     (wt:wwe-reject "UNSUPPORTED INTERMEDIATE RELATIONSHIP"
+                    "\nThe extension would end inside or too close to another wall. No change."))
+    (bad
+     (wt:wwe-reject "UNSUPPORTED INTERMEDIATE OBSTRUCTION"
+                    "\nAnother wall lies between the wall end and the target. No change."))
+    (t
+     (wt:dbg (list "WWE EXTENSION PATH old station" (wt:fmt (wt:dot (wt:wwe-g m "PEXT") o))
+                   "new station" (wt:fmt (wt:dot x o)) "distance" (wt:fmt (wt:dot (wt:v- x (wt:wwe-g m "PEXT")) o))
+                   "intermediate walls" n))
+     (list "OK" n))))
+
+;; local cleanup field: selected end .. target point, across the wall, grown by D
+(defun wt:wwe-field (m x / u s0 s1 sx)
+  (setq u (wt:wwe-g m "SU")
+        s0 (wt:dot (wt:v- (wt:wwe-g m "PEXT") (wt:wwe-g m "SP1")) u)
+        sx (wt:dot (wt:v- x (wt:wwe-g m "SP1")) u))
+  (wt:wwd-field (list (wt:wwe-g m "SP1") u (min s0 sx) (max s0 sx) (wt:wwe-g m "OMIN") (wt:wwe-g m "OMAX"))
+                (wt:cfg "TX_CONNECT_DISTANCE") '(0.0 0.0)))
+
+;; -> (transaction-record message distance) or a message (no change)
+(defun wt:wwe-execute (m tg / c x d w net pe e k dl nw new rec n o p f obs topo cor)
+  (wt:dbg (cons "WWE MOVING WALL source" (cons (wt:wwe-g m "SRC") (wt:wwe-g m "LABEL"))))
+  (wt:dbg (list "WWE TARGET source" (car tg) (nth 8 tg) "target supporting line" (caddr tg) (cadddr tg)))
+  (setq c (wt:wwe-target m tg))
+  (cond
+    ((= (type c) 'STR) c)
+    ((progn
+       (setq x (car c) d (cadr c))
+       (wt:dbg (list "WWE EXTENSION axis intersection" x "extension distance" (wt:fmt d)
+                     "classification" (if (<= d *wt:tol*) "ALREADY REACHES" "EXTEND")))
+       nil))
+    ((/= (wt:wwe-g m "SRC") (car tg))
+     (wt:wwe-reject "MIXED AKD / GENERIC JUNCTION"
+                    "\nMixed AKD / ordinary wall junctions are not supported yet. No change."))
+    ;; connected start end: classify the old node, then the corridor (both read-only)
+    ((and (> d *wt:tol*) (= (type (setq topo (wt:wwe-old-topology m))) 'STR)) topo)
+    ((and (> d *wt:tol*) (= (type (setq cor (wt:wwe-corridor m tg x topo))) 'STR)) cor)
+    ((progn
+       (if (> d *wt:tol*)
+         (wt:dbg (list "WWE TOPOLOGY TRANSITIONS OLD NODE"
+                       (cond ((= (car topo) "T") "T -> CROSS (moving wall passes through)")
+                             ((= (car topo) "L") "L -> T (old partner terminates on the moving wall)")
+                             (t (strcat (car topo) " -> (end leaves)")))
+                       "INTERMEDIATE CROSSES" (cadr cor) "TARGET NODE FREE -> junction")))
+       nil))
+    ((= (wt:wwe-g m "SRC") "AKD")
+     (if (<= d *wt:tol*)
+       "\nWall already reaches target."
+       (progn
+         (setq w (wt:wwe-g m "W") net (wt:net-scan) pe (wt:wwe-g m "PEXT"))
+         (wt:pend-begin)
+         ;; old linework of this wall (including the cap at the extended end)
+         (foreach f (cadr net) (if (wt:owned-line-p f w) (wt:pend-erase (car f))))
+         (setq dl (entget (car w)) k (if (wt:peq (wt:pt2 (cdr (assoc 10 dl))) pe) 10 11))
+         (wt:pend-modify (subst (cons k (wt:tx-z3 x (cdr (assoc k dl)))) (assoc k dl) dl))
+         (setq nw (if (= (wt:wwe-g m "END") 0)
+                    (list (car w) x (wt:w-p2 w) (wt:w-thk w) "CENTER")
+                    (list (car w) (wt:w-p1 w) x (wt:w-thk w) "CENTER")))
+         (setq new (wt:rebuild (list nw) nil))
+         (foreach nn new (wt:reg-add (car nn) (wt:w-thk nn) "CENTER"))
+         (wt:dbg (list "WWE CLEANUP AKD master end moved, rebuilt spans" (length new)))
+         (setq rec *wt:pending* *wt:pending* nil)
+         (list rec "\nWall extended." d))))
+    (t
+     (setq f (wt:wwe-field m x) o (wt:wwe-g m "O"))
+     (wt:pend-begin)
+     (setq *wt:tx-nested* t *wt:tw-net* (wt:net-scan))
+     (if (> d *wt:tol*)
+       (progn
+         (foreach e (wt:wwe-g m "ENDCAPS") (if (entget e) (wt:pend-erase e)))
+         (foreach side (list (wt:wwe-g m "SIDEA") (wt:wwe-g m "SIDEB"))
+           (setq e (wt:wwd-extreme side o) dl (entget (caddr e))
+                 p (wt:v+ (car e) (wt:v* o (- (wt:dot x o) (wt:dot (car e) o)))))
+           (wt:pend-modify (subst (cons (cadr e) (wt:tx-z3 p (cdr (assoc (cadr e) dl)))) (assoc (cadr e) dl) dl)))))
+     (setq n (wt:wwd-clean f))
+     (wt:dbg (list "WWE CLEANUP field" (car f) (caddr f) "junctions repaired" n
+                   "old cap removed" (if (and (> d *wt:tol*) (wt:wwe-g m "ENDCAPS")) "YES" "NO")))
+     (setq *wt:tx-nested* nil *wt:tw-net* nil rec *wt:pending* *wt:pending* nil)
+     (cond ((> d *wt:tol*) (list rec "\nWall extended." d))
+           ((> n 0) (list rec "\nWall already reaches target; junction repaired." d))
+           (t (list rec "\nWall already reaches target." d))))))
+
+;; non-interactive driver (tests): -> (record message distance) or a message
+(defun wt:wwe-run (e1 q1 e2 q2 / m tg)
+  (setq m (wt:wwe-resolve e1 q1))
+  (cond ((= (type m) 'STR) m)
+        ((= (type (setq tg (wt:wwd-resolve e2 q2))) 'STR) tg)
+        ((wt:wwe-same-p m tg) "\nTarget must be a different wall.")
+        (t (wt:wwe-execute m tg))))
+
+(defun wt:wwe-pick (msg fn / e res out done)
+  (while (not done)
+    (setvar "ERRNO" 0)
+    (setq e (entsel msg))
+    (cond
+      ((not e) (if (/= (getvar "ERRNO") 7) (setq done t)))
+      ((= (type (setq res (apply fn (list (car e) (wt:pt2 (trans (cadr e) 1 0)))))) 'STR)
+       (wt:dbg (list "WWE REJECT" res))
+       (princ res))
+      (t (setq out res done t))))
+  out)
+
+(defun c:WWE (/ *error* m tg res)
+  (setq *error* wt:error)
+  (wt:begin)
+  (if (setq m (wt:wwe-pick "\nSelect wall to extend: " 'wt:wwe-resolve))
+    (progn
+      (while (and (setq tg (wt:wwe-pick "\nSelect target wall face: " 'wt:wwd-resolve))
+                  (wt:wwe-same-p m tg))
+        (princ "\nTarget must be a different wall."))
+      (if tg
+        (princ (if (= (type (setq res (wt:wwe-execute m tg))) 'STR) res (cadr res))))))
+  (wt:end))
+
 (defun c:WWO () (c:WWF))   ; old name, undocumented alias
 
-(princ "\nAKD WallTool loaded: AX, ZXW, WW, XW, EW, WWF, TW, WR.")
+(princ "\nAKD WallTool loaded: AX, ZXW, WW, XW, EW, WWF, WWD, WWE, TW, TX, WR.")
 (princ)
