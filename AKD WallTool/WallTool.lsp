@@ -877,6 +877,53 @@
       (wt:pend-make (wt:mk-line (car s) (cadr s) lyr))))
   new)
 
+;; --- Local axis healing (shared by WW and WWE; WR stays the user-requested audit) ---
+;; Only the given node points are inspected. At each point a master node is removed
+;; only when it no longer represents topology:
+;;   - zero-length masters there are erased
+;;   - an exact duplicate of another master there is erased (one copy kept)
+;;   - exactly two recognised collinear spans of one thickness end there and nothing
+;;     else touches the point -> joined into one master (WR's wt:wr-join rule)
+;; A T, X, L, a width step or any other wall at the point keeps the split. Records
+;; into the caller's transaction. Returns (gone-ename . kept-ename) or nil.
+(defun wt:axis-heal-node (p / net ms seen w2 seg a b d fld)
+  (setq net (wt:net-scan))
+  (foreach mm (car net)
+    (if (wt:on-seg p (cadr mm) (caddr mm))
+      (cond
+        ((wt:peq (cadr mm) (caddr mm)) (wt:pend-erase (car mm)))
+        ((wt:master-at (cadr mm) (caddr mm) seen) (wt:pend-erase (car mm)))
+        (t (setq seen (cons mm seen))))))
+  (setq net (wt:net-scan)
+        fld (list (wt:v+ p '(-1.0 -1.0)) (wt:v+ p '(1.0 -1.0)) (wt:v+ p '(1.0 1.0)) (wt:v+ p '(-1.0 1.0))))
+  (foreach mm seen
+    (setq ms (cons (if (setq w2 (wt:wall-from-master mm (cadr net))) w2 mm) ms)))
+  (if (and (= (length ms) 2) (= (length (car ms)) 5) (= (length (cadr ms)) 5)
+           (setq seg (wt:wr-join (car ms) (cadr ms) (car net) fld)))
+    (progn
+      (setq a (car ms) b (cadr ms) d (entget (car a))
+            d (subst (cons 10 (wt:3d (car seg))) (assoc 10 d) d)
+            d (subst (cons 11 (wt:3d (cadr seg))) (assoc 11 d) d))
+      (wt:pend-modify d)
+      (wt:rebuild (list (list (car a) (car seg) (cadr seg) (wt:w-thk a) "CENTER")) (list b))
+      (wt:reg-add (car a) (wt:w-thk a) "CENTER")
+      (wt:dbg (list "AXIS HEAL joined" (car b) "into" (car a) "at" p))
+      (cons (car b) (car a)))))
+
+;; heal every given node point once. -> ((gone-ename . kept-ename) ...)
+(defun wt:axis-heal-local (pts / done out r)
+  (foreach q pts
+    (if (not (wt:tw-has-pt q done))
+      (progn
+        (setq done (cons q done))
+        (if (setq r (wt:axis-heal-node q)) (setq out (cons r out))))))
+  out)
+
+;; endpoints of wall records / (ename p1 p2) masters
+(defun wt:heal-pts (ws / out)
+  (foreach w ws (setq out (cons (cadr w) (cons (caddr w) out))))
+  out)
+
 ;; --- Creation alignment -> centerline. Masters are always wall centerlines. ---
 
 ;; Pure. Centerline of a wall of thickness th placed pos ("LEFT" body on the left of
@@ -964,7 +1011,7 @@
 ;; Add walls drawn along segments ((a b) ...) with the current width and creation
 ;; alignment as ONE transaction. Stored masters are centerlines. Returns the
 ;; (created erased modified) record, or nil if rejected.
-(defun wt:walls-add (segs / net new en rec bad res cls i moved)
+(defun wt:walls-add (segs / net new en rec bad res cls i moved hl pr)
   (setq net (wt:net-scan))
   (foreach sg segs
     (if (wt:peq (car sg) (cadr sg)) (setq bad "\nZero-length wall ignored.")))
@@ -986,6 +1033,13 @@
           (setq new (cons (list en (car c) (cadr c) *wt:thk* "CENTER") new))))
       (setq new (wt:rebuild (append (reverse new) moved) nil))
       (foreach w new (wt:reg-add (car w) (wt:w-thk w) "CENTER"))
+      ;; WW only (c:WW binds *wt:ww-heal*): nodes of the new spans and the corners hosts left
+      (if *wt:ww-heal* (setq hl (wt:axis-heal-local
+                 (append (wt:heal-pts new)
+                         (mapcar '(lambda (mv) (if (= (cadr mv) 10) (cadr (car mv)) (caddr (car mv)))) (cadr res))))))
+      (foreach pr hl
+        (setq new (mapcar '(lambda (w) (if (eq (car w) (car pr)) (cons (cdr pr) (cdr w)) w)) new))
+        (setq *wt:chain* (mapcar '(lambda (c) (if (eq (cadr c) (car pr)) (list (car c) (cdr pr) (caddr c)) c)) *wt:chain*)))
       (if *wt:chain-on*
         (progn
           (setq i 0)
@@ -1094,8 +1148,8 @@
                               (list (nth 2 pts) (nth 3 pts)) (list (nth 3 pts) (nth 0 pts)))))))))
 
 ;; hist items: (transaction-record points-stack-before)
-(defun c:WW (/ *error* p0 p q pts hist r done *wt:chain* *wt:chain-on*)
-  (setq *error* wt:error *wt:chain-on* t)
+(defun c:WW (/ *error* p0 p q pts hist r done *wt:chain* *wt:chain-on* *wt:ww-heal*)
+  (setq *error* wt:error *wt:chain-on* t *wt:ww-heal* t)
   (wt:begin)
   (wt:layer "AXIS")
   (wt:layer "WALL")
@@ -1868,6 +1922,31 @@
           (setq cands (cons (list "OK" (list e0 e1) (abs d)) cands))))))
   (cond ((cdr cands) (list "AMBIG")) (cands (car cands))))
 
+;; a wall line close to master w that w does not own: the master no longer matches
+;; its faces (e.g. the axis was stretched at one end only)
+(defun wt:wr-contradicted-p (w faces / r)
+  (foreach f faces
+    (if (and (not r) (not (wt:owned-line-p f w))
+             (<= (wt:seg-dist (wt:v* (wt:v+ (cadr f) (caddr f)) 0.5) (wt:w-p1 w) (wt:w-p2 w)) (wt:w-thk w)))
+      (setq r t)))
+  r)
+
+;; an unrecognised X-AXIS line inside the candidate band (e.g. a master stretched off its
+;; faces): which line is the wall's axis cannot be proven -> the candidate is skipped
+(defun wt:wr-in-band (p seg u th / s)
+  (setq s (wt:dot (wt:v- p (car seg)) u))
+  (and (> s (- *wt:tol*)) (< s (+ (wt:dist (car seg) (cadr seg)) *wt:tol*))
+       (<= (abs (wt:cross u (wt:v- p (car seg)))) (/ th 2.0))))
+
+(defun wt:wr-foreign-axis-p (seg th net walls / u r)
+  (setq u (wt:unit (wt:v- (cadr seg) (car seg))))
+  (foreach mm (car net)
+    (if (and (not r) (not (assoc (car mm) walls))
+             (or (wt:wr-in-band (cadr mm) seg u th) (wt:wr-in-band (caddr mm) seg u th))
+             (not (wt:wall-from-master mm (cadr net))))
+      (setq r t)))
+  r)
+
 ;; candidate band overlaps a known wall's body (would duplicate/nest a wall)
 (defun wt:wr-overlaps-p (seg th walls / u r ta tb)
   (setq u (wt:unit (wt:v- (cadr seg) (car seg))))
@@ -1909,22 +1988,24 @@
 
 ;; Audit and repair wall masters in field. Returns the transaction record (or nil).
 (defun wt:wr-repair (field / net recs band reg adj amb ambs created walls i r w m p xs x nw k d
-                            pass more c seg en rec checked msg joined pair keep a b known)
+                            pass more c seg en rec checked msg joined pair keep a b known ff)
   (setq net (wt:net-scan) adj 0 created 0 joined 0)
   (foreach m (car net) (if (setq w (wt:wall-from-master m (cadr net))) (setq known (cons w known))))
   ;; 1. audit existing masters: faces decide the centerline and thickness
   (foreach m (car net)
     (if (wt:tw-seg-in-field (cadr m) (caddr m) field)
       (progn
-        (setq band (wt:wr-band (wt:wr-offsets (cadr m) (caddr m) (wt:wr-free-faces (cadr net) known (car m) (wt:unit (wt:v- (caddr m) (cadr m))))))
+        (setq ff (wt:wr-free-faces (cadr net) known (car m) (wt:unit (wt:v- (caddr m) (cadr m))))
+              band (wt:wr-band (wt:wr-offsets (cadr m) (caddr m) ff))
               reg (assoc (car m) *wt:reg*))
         (cond
           ((= (type band) 'LIST)
            (setq d (wt:v* (wt:perp (wt:unit (wt:v- (caddr m) (cadr m)))) (car band)))
            (setq recs (cons (list m (list (car m) (wt:v+ (cadr m) d) (wt:v+ (caddr m) d) (cadr band) "CENTER")) recs)))
-          (reg                                  ; recognised wall with missing faces: master wins
+          ((and reg                             ; known wall whose faces are gone: master wins,
+                (not (wt:wr-contradicted-p (list (car m) (cadr m) (caddr m) (cadr reg) "CENTER") ff)))
            (setq recs (cons (list m (list (car m) (cadr m) (caddr m) (cadr reg) "CENTER")) recs)))
-          (band (setq ambs (cons (car m) ambs)))))))
+          ((or reg band) (setq ambs (cons (car m) ambs)))))))   ; faces disagree (e.g. partial STRETCH)
   (setq recs (reverse recs))
   ;; 2. an end that touched another wall master slides along its corrected line
   ;;    onto that master's corrected line (keeps L/T/X after re-centering)
@@ -1974,6 +2055,8 @@
           (cond
             ((not c))
             ((= (car c) "AMBIG") (if (not (member (car f) ambs)) (setq ambs (cons (car f) ambs))))
+            ((wt:wr-foreign-axis-p (cadr c) (caddr c) net walls)
+             (if (not (member (car f) ambs)) (setq ambs (cons (car f) ambs))))
             (t
              (setq seg (cadr c))
              (if (and (wt:pip (wt:v* (wt:v+ (car seg) (cadr seg)) 0.5) field)
@@ -3404,10 +3487,11 @@
 ;;; Target = WWD pick record (wt:wwd-resolve).
 ;;; AKD -> AKD (wt:wwe-plan / wt:wwe-akd-connect): intelligent connection. The logical
 ;;;   corner is centerline x centerline; the plan decides extend / trim / detach of the
-;;;   selected end, T or L at the target (moving a free target end by at most
-;;;   WWE_CORNER_DISTANCE), removes overshoot pieces, absorbs collinear spans the end
-;;;   passes. Nothing changes until the plan is complete; the old spans are then
-;;;   removed (EW path) and the new centred masters added (WW path) in one transaction.
+;;;   selected end, T or L at the target (a free target end may be extended to the
+;;;   corner; WWE_CORNER_DISTANCE only decides L vs T near an end), removes overshoot
+;;;   pieces, absorbs collinear spans the end passes. Nothing changes until the plan is
+;;;   complete; the old spans are then removed (EW path), the new centred masters added
+;;;   (WW path) and the touched nodes healed (wt:axis-heal-local), in one transaction.
 ;;; GENERIC: extend only (never shortens, never moves the target); mixed AKD / ordinary
 ;;;   junctions are refused.
 
@@ -3792,8 +3876,10 @@
 ;;                FREE target end and the source does not already touch the target ->
 ;;                L (target end trimmed); X at a target end -> L (a short free overshoot
 ;;                piece beyond it is removed), T if the target line continues;
-;;                X beyond a FREE target end by at most WWE_CORNER_DISTANCE -> L
-;;                (target end extended); otherwise refused
+;;                X beyond a FREE target end -> L (target end extended, any distance:
+;;                the user picked this target); a connected target end is refused.
+;;                WWE_CORNER_DISTANCE only classifies (L vs T near an end, overshoot
+;;                pieces); it never limits an explicit extension.
 ;;  collinear     spans the extended end passes on its own line are absorbed (the
 ;;                extended span replaces them; their branches stay T); a continuation
 ;;                past X is refused
@@ -3842,10 +3928,7 @@
              ((and nx (not (cdr sp))) (setq top "REMOVE" typ "L" rems (append rems nx)))))
       (t
        (setq ne (if (< tx 0.0) (wt:w-p1 tw) (wt:w-p2 tw)) d (wt:dist ne x) typ "L")
-       (cond ((> d lim)
-              (setq msg (strcat "\nThe target wall does not reach the connection point (more than "
-                                (wt:fmt lim) " beyond its end). No change.")))
-             ((wt:wwe-conn-at ne excl net)
+       (cond ((wt:wwe-conn-at ne excl net)
               (setq msg "\nThe target wall end is already connected elsewhere. No change."))
              (t (setq top "EXTEND" tnew (wt:wwe-moved tw ne x)))))))
   ;; 4. the selected end already sits on the corner: a short overshoot beyond it goes
@@ -3905,26 +3988,6 @@
   (setq en (wt:pend-make (wt:mk-line (car seg) (cadr seg) (wt:cfg "AXIS_LAYER"))))
   (list en (car seg) (cadr seg) th "CENTER"))
 
-;; An old node left with exactly two collinear spans of one wall (nothing else meeting)
-;; is healed with WR's join rule: the spans become one master again. -> joined count
-(defun wt:wwe-heal-node (p / net ws mm w2 seg a b d fld n)
-  (setq net (wt:net-scan) n 0
-        fld (list (wt:v+ p '(-1.0 -1.0)) (wt:v+ p '(1.0 -1.0)) (wt:v+ p '(1.0 1.0)) (wt:v+ p '(-1.0 1.0))))
-  (foreach mm (car net)
-    (if (wt:on-seg p (cadr mm) (caddr mm))
-      (setq ws (cons (if (setq w2 (wt:wall-from-master mm (cadr net))) w2 mm) ws))))
-  (if (and (= (length ws) 2) (= (length (car ws)) 5) (= (length (cadr ws)) 5)
-           (setq seg (wt:wr-join (car ws) (cadr ws) (car net) fld)))
-    (progn
-      (setq a (car ws) b (cadr ws) d (entget (car a))
-            d (subst (cons 10 (wt:3d (car seg))) (assoc 10 d) d)
-            d (subst (cons 11 (wt:3d (cadr seg))) (assoc 11 d) d))
-      (wt:pend-modify d)
-      (wt:rebuild (list (list (car a) (car seg) (cadr seg) (wt:w-thk a) "CENTER")) (list b))
-      (wt:reg-add (car a) (wt:w-thk a) "CENTER")
-      (setq n 1)))
-  n)
-
 ;; MODIFY: one transaction. Old spans (moved source / target, overshoot and absorbed
 ;; pieces) leave through the EW path, the new centred masters enter through the WW path.
 (defun wt:wwe-akd-connect (m tg / p w tw rems gone new sn tn rec)
@@ -3941,10 +4004,8 @@
       (if sn (setq new (cons (wt:wwe-new-master sn (wt:w-thk w)) new)))
       (if tn (setq new (cons (wt:wwe-new-master tn (wt:w-thk tw)) new)))
       (if new (foreach nn (wt:rebuild (reverse new) nil) (wt:reg-add (car nn) (wt:w-thk nn) "CENTER")))
-      ;; old nodes the removed spans leave behind
-      (foreach r rems
-        (foreach q (list (wt:w-p1 r) (wt:w-p2 r))
-          (if (not (wt:peq q (wt:wwe-g p "X"))) (wt:wwe-heal-node q))))
+      ;; command-owned cleanup: old nodes the removed spans left, the new spans' nodes
+      (wt:axis-heal-local (append (wt:heal-pts rems) (wt:heal-pts new)))
       (setq rec *wt:pending* *wt:pending* nil)
       (list rec "\nWall connected." (wt:wwe-g p "MOVE")))))
 

@@ -1996,8 +1996,10 @@ scen(lambda: mk_walls(L9, R9, BR9, T10), lambda: wconn(C((3000,0),(7000,0)), 0.9
      [C((0,0),(3000,0)), R9, BR9, T10], 'WWE connect 10: collinear node + branch, target behind -> span detached, right span + branch left as clean L')
 # 11 two separate collinear walls -> straight
 T11 = C((5000,0),(9000,0))
-scen(lambda: mk_walls(S2, T11), lambda: wconn(S2, 0.9, T11, 0.5), [C((0,0),(5000,0)), T11],
-     'WWE connect 11: collinear gap -> straight continuation, faces continuous')
+refm11 = [mk((0,0),(9000,0))]
+fresh(); mk_walls(S2, T11); r = wconn(S2, 0.9, T11, 0.5)
+chk('WWE connect 11: collinear gap -> straight continuation, faces continuous, healed into one master',
+    okx(r) and master_set() == refm11 and master_offsets_ok() and same_lines(walls_now(), expected([C((0,0),(9000,0))])))
 # 12 parallel non-collinear -> refused
 fresh(); mk_walls(S2, C((0,2000),(4000,2000))); before = geo()
 r = wconn(S2, 0.9, C((0,2000),(4000,2000)), 0.5)
@@ -2025,9 +2027,8 @@ chk('WWE connect 20: corner already a junction of other walls -> refused, no cha
 fresh(); mk_walls(S2, T3, C((5000,200),(7000,200))); before = geo()
 r = wconn(S2, 0.95, T3, 0.5)
 chk('WWE connect: target end connected elsewhere -> refused, no change', isinstance(r, str) and 'connected elsewhere' in r and geo() == before)
-fresh(); mk_walls(S2, C((5000,500),(5000,3000))); before = geo()
-r = wconn(S2, 0.95, C((5000,500),(5000,3000)), 0.5)
-chk('WWE connect: target end more than WWE_CORNER_DISTANCE away -> refused, no change', isinstance(r, str) and 'does not reach' in r and geo() == before)
+scen(lambda: mk_walls(S2, C((5000,500),(5000,3000))), lambda: wconn(S2, 0.95, C((5000,500),(5000,3000)), 0.5),
+     [C((0,0),(5000,0)), C((5000,0),(5000,3000))], 'WWE connect: free target end 500 away (> WWE_CORNER_DISTANCE) -> connected (explicit target)')
 fresh(); mk_walls(S2, C((-1000,-3000),(-1000,3000))); before = geo()
 r = wconn(S2, 0.95, C((-1000,-3000),(-1000,3000)), 0.5)
 chk('WWE connect: corner behind the fixed end -> refused, no change', isinstance(r, str) and 'behind' in r and geo() == before)
@@ -2057,6 +2058,149 @@ src_l = open(os.path.join(HERE, '..', 'WallTool.lsp')).read()
 chk('WWE command: "Select wall end to connect" / "Select target wall", reports Wall connected',
     'Wall connected' in out.getvalue() and '"\\nSelect wall end to connect: "' in src_l and '"\\nSelect target wall: "' in src_l
     and mk((0,0),(5000,0)) in master_set())
+
+# =========================== Local axis healing ===========================
+def nmast(): return len(masters_now())
+# WW
+ww_run([(0,0),(4000,0),'Enter'])
+chk('HEAL 1: WW free segment -> one master, nothing else changed', master_set() == [mk((0,0),(4000,0))] and nmast() == 1)
+fresh(); add(((0,0),(6000,0)))
+ww_run([(3000,0),(3000,3000),'Enter'], keep_session=True)
+chk('HEAL 2: WW branch into a wall -> T split kept (3 spans)', nmast() == 3 and normalized_ok() and lines_match_masters())
+fresh(); add(((0,0),(6000,0)))
+ww_run([(3000,-3000),(3000,3000),'Enter'], keep_session=True)
+chk('HEAL 3: WW crossing wall -> X splits kept (4 spans)', nmast() == 4 and normalized_ok() and lines_match_masters())
+A.POINTQ[:] = []
+fresh(); A.POINTQ[:] = ['Rectangle', [0.0,0.0,0.0], [4000.0,3000.0,0.0], None]; A.KWQUEUE[:] = []; A.ev('(c:WW)')
+chk('HEAL 4: WW Rectangle -> four corner spans kept', nmast() == 4 and normalized_ok() and lines_match_masters())
+ww_run([(0,0),(3000,0),(6000,0),'Enter'])
+chk('HEAL 4b: WW straight run in two clicks -> redundant node healed into one master', master_set() == [mk((0,0),(6000,0))] and lines_match_masters())
+ww_run([(0,0),(3000,0),(6000,0),(6000,3000),'Enter'], th=150.0, pos='LEFT')
+chk('HEAL 4c: WW LEFT straight run + corner -> straight node healed, corner still joins the healed master',
+    master_set() == sorted([mk((0,75),(5925,75)), mk((5925,75),(5925,3000))]) and master_offsets_ok()
+    and same_lines(walls_now(), expected([wall((0,0),(3000,0),150,'LEFT'), wall((3000,0),(6000,0),150,'LEFT'), wall((6000,0),(6000,3000),150,'LEFT')])))
+ww_run([(0,0),(3000,0),'Enter']); one = geo()
+ww_run([(0,0),(3000,0),(6000,0),'Undo','Enter'])
+chk('HEAL 11: WW Undo after a healed straight segment -> exactly the one-segment state', geo() == one)
+fresh(); add(((0,10000),(3000,10000))); add(((3000,10000),(6000,10000)))     # unhealed pair elsewhere (plain add)
+ww_run([(0,0),(3000,0),(6000,0),'Enter'], keep_session=True)
+chk('HEAL 10a: WW heals only its own nodes (an unrelated split pair elsewhere is untouched)',
+    mk((0,10000),(3000,10000)) in master_set() and mk((3000,10000),(6000,10000)) in master_set() and mk((0,0),(6000,0)) in master_set())
+chk('WWF / XW / plain add: no local healing (collinear continuation keeps its spans)', True if False else
+    (lambda: (fresh(), add(((0,0),(3000,0))), add(((3000,0),(6000,0))), nmast() == 2)[-1])())
+# WWE
+fresh(); mk_walls(H8, B8, T8b)
+r = wconn(C((3000,-1500),(3000,0)), 0.5, T8b, 0.2)
+chk('HEAL 5: WWE detaches a T branch -> old host split healed (one host master)', okx(r) and mk((0,0),(6000,0)) in master_set())
+fresh(); mk_walls(S2, P7, T7b)
+r = wconn(C((2000,0),(4000,0)), 0.8, T7b, 0.2, sside=-1)
+chk('HEAL 6: WWE detaches an L -> old partner a single free master, no leftover node',
+    okx(r) and mk((4000,0),(4000,3000)) in master_set() and nmast() == 4 and normalized_ok())
+fresh(); mk_walls(L9, R9, BR9, T9)
+r = wconn(L9, 0.97, T9, 0.2, sside=-1)
+chk('HEAL 7: WWE through a collinear continuation -> T node with the branch kept, nothing else split',
+    okx(r) and master_set() == sorted([mk((0,0),(7000,0)), mk((7000,0),(13000,0)), mk((7000,0),(7000,3000)),
+                                        mk((13000,-3000),(13000,0)), mk((13000,0),(13000,3000))]))
+fresh(); mk_walls(S2, T3); r = wconn(S2, 0.95, T3, 0.5)
+chk('HEAL 8: WWE smart fillet -> exactly two masters meeting at the corner', okx(r) and master_set() == sorted([mk((0,0),(5000,0)), mk((5000,0),(5000,3000))]))
+fresh(); mk_walls(S5, T3); r = wconn(S5, 0.98, T3, 0.5)
+chk('HEAL 9: WWE trim + extend -> exactly two masters', okx(r) and master_set() == sorted([mk((0,0),(5000,0)), mk((5000,0),(5000,3000))]))
+fresh(); mk_walls(S2, T3); add(((0,10000),(3000,10000))); add(((3000,10000),(6000,10000)))
+r = wconn(S2, 0.95, T3, 0.5)
+chk('HEAL 10b: WWE heals only its own nodes (an unrelated split pair elsewhere is untouched)',
+    okx(r) and mk((0,10000),(3000,10000)) in master_set() and mk((3000,10000),(6000,10000)) in master_set())
+fresh(); mk_walls(H8, B8, T8b); before = geo(); ents = {e: list(A.DB[e]) for e, a, b in masters_now()}
+r = wconn(C((3000,-1500),(3000,0)), 0.5, T8b, 0.2); undo_rec(r[0])
+chk('HEAL 12: WWE Undo including the healed host -> exact original (split host back)',
+    geo() == before and all(e not in A.DELETED and A.DB[e] == d for e, d in ents.items()))
+
+# =========================== WWE far explicit targets ===========================
+for dd in (100, 300, 301, 1500, 5000):
+    Tf = C((5000,dd),(5000,dd+3000))
+    scen(lambda Tf=Tf: mk_walls(S2, Tf), lambda Tf=Tf: wconn(S2, 0.95, Tf, 0.5), [C((0,0),(5000,0)), C((5000,0),(5000,dd+3000))],
+         f'WWE far: free target end {dd} beyond the corner -> connected (L)')
+fresh(); mk_walls(S2, C((5000,1500),(5000,4500)), C((4000,800),(6000,800))); before = geo()
+r = wconn(S2, 0.95, C((5000,1500),(5000,4500)), 0.5)
+chk('WWE far: another wall across the target extension -> refused, no change', isinstance(r, str) and 'between' in r and geo() == before)
+fresh(); mk_walls(S2, C((5000,1500),(5000,4500)), C((5000,1500),(7000,1500))); before = geo()
+r = wconn(S2, 0.95, C((5000,1500),(5000,4500)), 0.5)
+chk('WWE far: target end already connected (L elsewhere) -> refused, topology kept', isinstance(r, str) and 'connected elsewhere' in r and geo() == before)
+fresh(); mk_walls(S2, C((0,2000),(4000,2000))); before = geo()
+r = wconn(S2, 0.9, C((0,2000),(4000,2000)), 0.5)
+chk('WWE far: parallel target still refused', isinstance(r, str) and 'parallel' in r and geo() == before)
+T21a = C((5000,-250),(5000,3000))
+scen(lambda: mk_walls(S2, T21a), lambda: wconn(S2, 0.95, T21a, 0.5), [C((0,0),(5000,0)), C((5000,0),(5000,3000))],
+     'WWE classify: corner 250 from a free target end (<= WWE_CORNER_DISTANCE) -> L, target trimmed')
+T21b = C((5000,-400),(5000,3000))
+scen(lambda: mk_walls(S2, T21b), lambda: wconn(S2, 0.95, T21b, 0.5), [C((0,0),(5000,0)), T21b],
+     'WWE classify: corner 400 from the target end (> WWE_CORNER_DISTANCE) -> T, target unchanged')
+S24, T24 = C((0,0),(4000,0),200.0), C((5000,2000),(5000,5000),100.0)
+scen(lambda: mk_walls(S24, T24), lambda: wconn(S24, 0.95, T24, 0.5), [C((0,0),(5000,0),200.0), C((5000,0),(5000,5000),100.0)],
+     'WWE far: 200 + 100 smart fillet with the target 2000 away')
+
+# =========================== Native STRETCH compatibility ===========================
+def stretch(x0, y0, x1, y1, dx, dy, layers=('X-AXIS', 'A-WALL')):
+    """what AutoCAD STRETCH does to LINEs: endpoints inside the crossing window move"""
+    for lyr in layers:
+        for e, a, b in A.db_lines(lyr):
+            for k, p in ((0, a), (1, b)):
+                if x0 <= p[0] <= x1 and y0 <= p[1] <= y1:
+                    set_end(e, k, (p[0] + dx, p[1] + dy))
+def rec_of_face(pt):
+    A.G[A.Sym('*T-E*')] = face_at(pt)
+    return A.ev('(wt:wall-from-entity *t-e* (wt:net-scan))')
+W25 = C((0,0),(4000,0),200.0)
+def stretched_free():
+    fresh(); mk_walls(W25); stretch(3900,-200,4200,200,1000,0)
+stretched_free()
+r = rec_of_face((2000,100))
+chk('STRETCH 25/32: complete end stretch -> recognised from current geometry (5000 long, 200, centred), session thickness kept',
+    r and mk(r[1], r[2]) == mk((0,0),(5000,0)) and round(r[3]) == 200 and master_offsets_ok()
+    and same_lines(walls_now(), expected([C((0,0),(5000,0),200.0)])))
+stretched_free(); ew(face_at((4500,100)), pts={face_at((4500,100)): (4500.0, 100.2)})
+chk('STRETCH 26: EW on the stretched wall removes it', not masters_now() and not walls_now())
+stretched_free(); e, q = face_pick(C((0,0),(5000,0),200.0), 1, 0.5); wwf(e, q, 1500)
+chk('STRETCH 27: WWF from the stretched wall copies its new length', mk((0,1700),(5000,1700)) in master_set() and master_offsets_ok())
+stretched_free(); settings(150, 'CENTER'); add(((0,3000),(5000,3000)))
+wwd(face_at((2500,100)), (2500.0, 100.2), face_at((2500,2925)), (2500.0, 2924.8), 1000.0)
+chk('STRETCH 28: WWD moves the stretched wall', mk((0,1825),(5000,1825)) in master_set() and master_offsets_ok())
+stretched_free(); settings(150, 'CENTER'); add(((7000,-3000),(7000,3000)))
+r = wconn(C((0,0),(5000,0),200.0), 0.95, C((7000,-3000),(7000,3000)), 0.2)
+chk('STRETCH 29: WWE extends the stretched wall to a target', okx(r) and mk((0,0),(7000,0)) in master_set() and normalized_ok())
+fresh(); mk_walls(S2, P7); stretch(3800,-300,4300,3300,1000,0)
+chk('STRETCH 30: complete L-corner stretch (partner moved whole) -> still a valid, recognised L',
+    master_set() == sorted([mk((0,0),(5000,0)), mk((5000,0),(5000,3000))]) and master_offsets_ok()
+    and same_lines(walls_now(), expected([C((0,0),(5000,0)), C((5000,0),(5000,3000))])))
+fresh(); mk_walls(H8, B8); stretch(2800,-3200,3200,-2800,0,-1000)
+chk('STRETCH 31: complete T-branch end stretch -> valid T',
+    mk((3000,-4000),(3000,0)) in master_set() and master_offsets_ok()
+    and same_lines(walls_now(), expected([H8, C((3000,-4000),(3000,0))])))
+fresh(); mk_walls(H8, B8); stretch(5800,-200,6200,200,1000,0)
+chk('STRETCH 31b: complete T-host end stretch (normalized host with T node) -> valid, node kept',
+    master_set() == sorted([mk((0,0),(3000,0)), mk((3000,0),(7000,0)), mk((3000,-3000),(3000,0))]) and master_offsets_ok()
+    and same_lines(walls_now(), expected([C((0,0),(7000,0)), B8])))
+fresh(); mk_walls(W25); stretch(3900,-200,4200,200,1000,0, layers=('A-WALL',))
+r = rec_of_face((2000,100)); damaged = not same_lines(walls_now(), expected([W25]))
+chk('STRETCH 33: faces stretched, axis not -> the wall is still the axis (4000), not a new 5000 wall; mismatch visible',
+    r and mk(r[1], r[2]) == mk((0,0),(4000,0)) and damaged)
+wr(field(-500,-500,5500,500))
+chk('STRETCH 35: WR restores the faces from the axis', master_set() == [mk((0,0),(4000,0))] and same_lines(walls_now(), expected([W25])))
+fresh(); mk_walls(W25); stretch(3900,-200,4200,200,1000,0, layers=('X-AXIS',))
+r = rec_of_face((2000,100))
+chk('STRETCH 34: axis stretched, faces not -> axis wins (5000), faces not treated as a separate wall',
+    r and mk(r[1], r[2]) == mk((0,0),(5000,0)) and not same_lines(walls_now(), expected([C((0,0),(5000,0),200.0)])))
+wr(field(-500,-500,5500,500))
+chk('STRETCH 35b: WR rebuilds the faces to the stretched axis', master_set() == [mk((0,0),(5000,0))] and same_lines(walls_now(), expected([C((0,0),(5000,0),200.0)])))
+fresh(); mk_walls(W25); stretch(-500,-500,4500,500,0,60, layers=('X-AXIS',))
+wr(field(-500,-500,4500,500))
+chk('STRETCH 36: axis stretched sideways as a whole -> WR re-centres it, faces unchanged',
+    master_set() == [mk((0,0),(4000,0))] and same_lines(walls_now(), expected([W25])))
+fresh(); mk_walls(W25); stretch(3900,-200,4200,200,0,300, layers=('X-AXIS',)); before = geo()
+msg, _ = say(lambda: wr(field(-500,-500,4500,500)))
+e = face_at((2000,100)); A.G[A.Sym('*T-E*')] = e
+res = A.ev('(wt:ew-resolve *t-e* (list 2000.0 100.2) (wt:net-scan) 0.5)')
+chk('STRETCH 37: axis stretched at one end only (skewed) -> not a wall for EW, WR skips it as ambiguous, nothing changed',
+    res[0] != 'OK' and geo() == before and 'ambiguous' in msg)
 
 # --- TX protects AKD wall geometry (integration) ---
 build([wall((0,0),(6000,0))]); add(((3000,0),(3000,3000))); akd_before = geo()

@@ -9,6 +9,9 @@
 - **WWD** — wall to distance: moves one wall so a picked face is at a clear distance from a reference face (AKD and ordinary walls).
 - **WWE** — wall connect: connects one wall end to a picked target wall. For AKD walls it plans the connection first (centerline corner, T or L, extend / trim / detach, target end moved up to `WWE_CORNER_DISTANCE`, overshoot pieces removed, collinear runs absorbed) and applies it in one transaction. Ordinary walls: extend only.
 - **TW** — also repairs ordinary double-line walls in the window.
+- **Local axis healing** — WW and WWE join redundant collinear master nodes their own operation left (T/X splits kept), in the same undo step.
+- **WWE** — a free target end is extended to the corner at any distance; `WWE_CORNER_DISTANCE` now only decides L vs T near an end and which overshoot pieces are removed.
+- **STRETCH** — documented and tested: complete stretches stay valid; partial ones are repaired by WR; an axis stretched at one end only is skipped by WR as ambiguous.
 - Older off-centre walls are refused by WWD / WWE ("Run WR first") and left alone by TX / TW. WR ignores other walls' caps inside a wall's band when auditing.
 
 ## v0.1.0 — Stage 1: 2D Wall Core

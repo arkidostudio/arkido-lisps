@@ -55,7 +55,7 @@ Plain `KEY=VALUE` text; `#` starts a comment; `[SECTIONS]` are only for readabil
 | `TW_CONNECT_DISTANCE` | 150 | Largest gap/overshoot TW closes |
 | `TX_CONNECT_DISTANCE` | 150 | Largest trim/extend TX applies automatically |
 | `TX_WALL_MAX` | 600 | Largest spacing of two parallel lines treated as one double-line wall |
-| `WWE_CORNER_DISTANCE` | 300 | Largest distance WWE moves a free end of the TARGET wall to form a corner |
+| `WWE_CORNER_DISTANCE` | 300 | WWE corner classification: a corner this close to a free target end becomes an L (the end is trimmed); overshoot pieces up to this length are removed. It does not limit extensions. |
 
 `WW` > Settings shows the loaded file and values, and can reload it.
 
@@ -76,6 +76,7 @@ Specify next point or [Width/Alignment/Rectangle/Undo/Close/Settings]:
 - `R` Rectangle: two corners give four walls, counter-clockwise, so Left puts the walls inside the rectangle and Right outside; the four masters are their centerlines.
 - `U` Undo removes the last segment or rectangle; `C` Close joins back to the start after two or more segments.
 - Snapping to an existing wall's face connects to that wall's master.
+- After each segment, rectangle or Close, WW cleans the nodes it created (see Local axis healing): a straight run drawn in several clicks becomes one master, while T and X splits stay.
 - Width and Alignment can be changed at any time while drawing; each new segment uses the values active when it is placed, earlier segments are not changed, and Undo removes walls without rewinding the settings. Close uses the current values. Both are remembered for the session and shared with XW (`T` in XW opens the same Alignment choice). One WW command is one AutoCAD undo step.
 
 **XW** — preselect LINEs, or `Select axis lines or [Width/posiTion]:` (pick, window or crossing; Enter to finish). Each line is the reference the wall is placed against (width + position); the line itself becomes the wall's centerline master on X-AXIS (Undo restores the original line) and are solved as one network with any walls they touch. Non-LINE objects, lines already walls, lines on A-WALL and zero-length lines are skipped.
@@ -101,11 +102,12 @@ Select wall face or [Distance/Undo] <Exit>:
 **WWE** — `Select wall end to connect:` (a face or cap near the end), `Select target wall:`. Connects that end of that wall span to the target wall; WWE works out whether this means extending, trimming or detaching. For AKD walls:
 - The corner is where the two centerlines meet. Only the selected end moves, along the wall; the other end never moves.
 - Target crossed in its middle: the end runs to it and forms a T (the target does not change).
-- Corner at or just past a free target end (within `WWE_CORNER_DISTANCE`): an L. The target end is extended or trimmed to the corner, and short overshoot pieces left beyond the corner are removed.
+- Corner past a free target end: an L; the target end is extended to the corner, however far, because you picked that wall. A target end that is joined to other walls is not moved.
+- Corner inside the target within `WWE_CORNER_DISTANCE` of a free end: an L (the end is trimmed); farther in: a T. Short overshoot pieces left beyond a corner are removed.
 - The selected end may be free or part of an L, T or straight (collinear) run. Going forward, the wall runs through its old junction (an old L partner becomes a T branch, an old T host is crossed), and collinear spans it passes become part of it (their branches stay). Going back to a target that crosses the wall, the piece beyond it is removed and the old junction is repaired (an old T host becomes continuous, an old L partner gets its cap).
 - Collinear target: a straight continuation.
 - Refused with a message, nothing changed: parallel walls, a corner behind the fixed end, a target end out of reach or already connected elsewhere, a corner that is already a junction of other walls, ambiguous continuations, walls or other linework in the way, legacy off-centre walls.
-- Widths and creation alignment don't matter; masters stay centred. One undo step.
+- Widths and creation alignment don't matter; masters stay centred. Afterwards the nodes it touched are cleaned (see Local axis healing). One undo step.
 For ordinary double-line walls WWE still only extends an end to a target face (forward), and junctions between AKD and ordinary walls are refused.
 
 **TX** — preselect LINEs, or `Specify first corner of repair area:` / `Specify opposite corner:`. Repairs ordinary line geometry on any layer: merges collinear pieces and small gaps, closes L and T corners of single lines and of double-line walls (up to `TX_WALL_MAX` apart), cuts clean X crossings, and caps free double-line wall ends inside a window. X-AXIS lines and lines belonging to AKD walls (including older off-centre walls) are left alone and counted. Ambiguous junctions are left unchanged. One undo step.
@@ -126,6 +128,14 @@ For ordinary double-line walls WWE still only extends an end to a target face (f
 - Masters are then split at junctions and all walls in the window are rebuilt. One undo step; running WR again on a healthy area changes nothing.
 - Output: `WR: N wall(s) checked. N axis/axes adjusted. N missing axis/axes rebuilt.` or `No axis repairs required.`
 - TW = connection repair (gaps, overshoots, reconnecting). WR = master/axis repair (what the walls are). TX = junction repair of ordinary lines. WWD / WWE = editing walls. Open older drawings and run WR over them to migrate eccentric masters to centerlines; nothing is migrated automatically on load.
+
+## Local axis healing
+
+WW and WWE finish by cleaning only the master nodes their own operation touched (`wt:axis-heal-local`): a node where exactly two collinear spans of one wall meet and nothing else is joined back into one master, and zero-length or duplicate masters there are removed. Nodes that still mean something (T, X, L, width steps) stay split. It is part of the same undo step. Other damage in the drawing is left to WR; WWF, XW, EW and TW do not heal.
+
+## Native AutoCAD STRETCH
+
+Walls are ordinary lines, so STRETCH works on them. WallTool reads wall geometry from the drawing every time; the session only remembers each master's thickness. A complete stretch (axis and faces moved together) leaves a valid wall that EW, WWF, WWD, WWE, TW and WR use as is. A partial stretch breaks the wall/axis relationship: the axis stays authoritative, and WR rebuilds the faces from it, or re-centres an axis moved sideways as a whole. An axis stretched at one end only no longer lies between its faces: it is not treated as a wall, and WR skips it as ambiguous for you to fix.
 
 ## Known limitations
 
