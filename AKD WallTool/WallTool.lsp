@@ -1,5 +1,5 @@
 ;;; WallTool.lsp -- AKD WallTool v0.1.0 (Stage 1: 2D Wall Core)
-;;; Commands: AX (axis), ZXW (grid axis), WW (wall), XW (axis to wall), EW (erase wall), WWF (wall from wall), WWD (wall to distance), WWE (wall extend), TW (connection repair), TX (line junction cleanup), WR (wall/axis repair)
+;;; Commands: AX (axis), ZXW (grid axis), WW (wall), XW (axis to wall), EW (erase wall), WWF (wall from wall), WWD (wall to distance), WWE (wall connect), TW (connection repair), TX (line junction cleanup), WR (wall/axis repair)
 ;;; Plain AutoLISP + DCL only (no VL/VLA/VLAX, no XData). AutoCAD Mac + Windows.
 ;;;
 ;;; Model:  MASTER AXIS -> THICKNESS + POSITION -> THEORETICAL STRIP
@@ -154,7 +154,8 @@
     (cons "WALL_LAYER" "A-WALL") (cons "WALL_COLOR" 7) (cons "WALL_LINETYPE" "CONTINUOUS") (cons "WALL_PLOT" 1)
     (cons "BUBBLE_DIAMETER" 800.0) (cons "BUBBLE_OFFSET" 500.0) (cons "TEXT_HEIGHT" 350.0)
     (cons "DEFAULT_OFFSET" 1500.0) (cons "TW_CONNECT_DISTANCE" 150.0)
-    (cons "TX_CONNECT_DISTANCE" 150.0) (cons "TX_WALL_MAX" 600.0)))
+    (cons "TX_CONNECT_DISTANCE" 150.0) (cons "TX_WALL_MAX" 600.0)
+    (cons "WWE_CORNER_DISTANCE" 300.0)))
 
 (setq *wt:cfg* nil)
 
@@ -3392,7 +3393,7 @@
   (wt:end))
 
 ;;; ===================================================================
-;;; 22. WWE -- wall extend (extend ONE wall end to ONE picked target wall face)
+;;; 22. WWE -- wall connect (connect ONE wall end to ONE picked target wall)
 ;;; ===================================================================
 ;;; Moving record = assoc list ("KEY" . value):
 ;;;   SRC "AKD"|"GENERIC", END 0|1, PEXT / PFIX axis ends, O outward unit,
@@ -3401,7 +3402,14 @@
 ;;;   GENERIC: SP1 SU (picked face line), LO HI OMIN OMAX (footprint on it),
 ;;;            SIDEA SIDEB face entities, ENDCAPS caps at the selected end
 ;;; Target = WWD pick record (wt:wwd-resolve).
-;;; EXTEND ONLY: never shortens, never moves the target, never moves the other end.
+;;; AKD -> AKD (wt:wwe-plan / wt:wwe-akd-connect): intelligent connection. The logical
+;;;   corner is centerline x centerline; the plan decides extend / trim / detach of the
+;;;   selected end, T or L at the target (moving a free target end by at most
+;;;   WWE_CORNER_DISTANCE), removes overshoot pieces, absorbs collinear spans the end
+;;;   passes. Nothing changes until the plan is complete; the old spans are then
+;;;   removed (EW path) and the new centred masters added (WW path) in one transaction.
+;;; GENERIC: extend only (never shortens, never moves the target); mixed AKD / ordinary
+;;;   junctions are refused.
 
 (defun wt:wwe-g (rec k) (cdr (assoc k rec)))
 
@@ -3567,24 +3575,28 @@
           (t "\nSelected wall end touches unrecognised linework. No change."))))
 
 ;; AKD: masters touching the selected master end
-(defun wt:wwe-topo-akd (m / w pe net ts mm w2 bad)
+;; AKD: masters touching the selected master end -> (kind partners collinear)
+;; kind FREE | L | T | COLLINEAR | COMPLEX | UNSUPPORTED (classification only; the
+;; connection planner decides what is allowed)
+(defun wt:wwe-topo-akd (m / w pe net ts mm w2 bad col)
   (setq w (wt:wwe-g m "W") pe (wt:wwe-g m "PEXT") net *wt:tw-net*)
   (foreach e (wt:wwe-g m "CONN")
     (setq mm (assoc e (car net)))
     (cond ((or (not mm) (not (setq w2 (wt:wall-from-master mm (cadr net))))) (setq bad "UNSUPPORTED"))
-          ((< (abs (wt:cross (wt:w-u w) (wt:w-u w2))) *wt:tx-min-sin*) (if (not bad) (setq bad "COLLINEAR")))
+          ((< (abs (wt:cross (wt:w-u w) (wt:w-u w2))) *wt:tx-min-sin*) (setq col (cons w2 col)))
           (t (setq ts (cons w2 ts)))))
   (foreach a ts
     (foreach b ts
       (if (or (>= (abs (wt:cross (wt:w-u a) (wt:w-u b))) *wt:tx-tol-par*)
               (> (abs (wt:cross (wt:w-u a) (wt:v- (wt:w-p1 b) (wt:w-p1 a)))) *wt:tol*))
         (if (not bad) (setq bad "COMPLEX")))))
-  (cond (bad (wt:wwe-topo-reject bad))
-        ((not ts) (list "FREE"))
-        ((cdr (cdr ts)) (wt:wwe-topo-reject "COMPLEX"))
-        ((cdr ts) (list "T" ts))                                    ; host split at the node
-        ((or (wt:peq pe (wt:w-p1 (car ts))) (wt:peq pe (wt:w-p2 (car ts)))) (list "L" ts))
-        (t (list "T" ts))))
+  (cond (bad (list bad ts col))
+        (col (list "COLLINEAR" ts col))
+        ((not ts) (list "FREE" nil nil))
+        ((cdr (cdr ts)) (list "COMPLEX" ts nil))
+        ((cdr ts) (list "T" ts nil))                                ; host split at the node
+        ((or (wt:peq pe (wt:w-p1 (car ts))) (wt:peq pe (wt:w-p2 (car ts)))) (list "L" ts nil))
+        (t (list "T" ts nil))))
 
 ;; generic walls and all lines in a field -> ((ents u face1-pt face2-pt axis-p1 axis-p2 width) ...) lines
 (defun wt:wwe-scan (field / ens out lines d)
@@ -3645,7 +3657,7 @@
 ;; -> (type partners) or a refusal message. No drawing change.
 (defun wt:wwe-old-topology (m / res)
   (setq *wt:tw-net* (wt:net-scan)
-        res (if (= (wt:wwe-g m "SRC") "AKD") (wt:wwe-topo-akd m) (wt:wwe-topo-generic m))
+        res (wt:wwe-topo-generic m)
         *wt:tw-net* nil)
   (if (/= (type res) 'STR)
     (wt:dbg (list "WWE START TOPOLOGY selected end" (if (= (wt:wwe-g m "END") 0) "END A" "END B")
@@ -3737,10 +3749,215 @@
   (wt:wwd-field (list (wt:wwe-g m "SP1") u (min s0 sx) (max s0 sx) (wt:wwe-g m "OMIN") (wt:wwe-g m "OMAX"))
                 (wt:cfg "TX_CONNECT_DISTANCE") '(0.0 0.0)))
 
+;;; --- AKD -> AKD: intelligent connection (ANALYZE FIRST, MODIFY SECOND) ---
+
+(defun wt:wwe-set (m k v) (cons (cons k v) m))      ; assoc record: newest value wins
+
+;; masters touching p, excluding enames in excl
+(defun wt:wwe-conn-at (p excl net / out)
+  (foreach mm (car net)
+    (if (and (not (member (car mm) excl)) (wt:on-seg p (cadr mm) (caddr mm))) (setq out (cons (car mm) out))))
+  out)
+
+;; recognised wall spans ENDING at p, parallel to u, excluding enames in excl
+(defun wt:wwe-line-spans-at (p u excl net / out w2)
+  (foreach mm (car net)
+    (if (and (not (member (car mm) excl))
+             (or (wt:peq p (cadr mm)) (wt:peq p (caddr mm)))
+             (setq w2 (wt:wall-from-master mm (cadr net)))
+             (wt:par u (wt:w-u w2)))
+      (setq out (cons w2 out))))
+  out)
+
+(defun wt:wwe-far-end (s p) (if (wt:peq p (wt:w-p1 s)) (wt:w-p2 s) (wt:w-p1 s)))
+
+;; wall w with its end p moved to x (direction kept) -> (p1 p2)
+(defun wt:wwe-moved (w p x) (if (wt:peq p (wt:w-p1 w)) (list x (wt:w-p2 w)) (list (wt:w-p1 w) x)))
+
+;; short overshoot pieces among spans: far end free and no more than lim from x
+(defun wt:wwe-overshoots (spans x lim net / out f)
+  (foreach sp spans
+    (setq f (wt:wwe-far-end sp x))
+    (if (and (<= (wt:dist x f) lim) (not (wt:wwe-conn-at f (list (car sp)) net)))
+      (setq out (cons sp out))))
+  out)
+
+;; Pure plan (reads the drawing only). -> plan assoc, or a refusal message.
+;; Rules:
+;;  corner X      centerline x centerline (parallel: collinear -> STRAIGHT, else refused)
+;;  source end    moves along its own line: EXTEND (forward, any distance, corridor
+;;                checked), TRIM (back, never past the fixed end), REMOVE when the
+;;                selected span itself starts at X (an overshoot / detached piece)
+;;  target        X inside the span -> T, unless X is within WWE_CORNER_DISTANCE of a
+;;                FREE target end and the source does not already touch the target ->
+;;                L (target end trimmed); X at a target end -> L (a short free overshoot
+;;                piece beyond it is removed), T if the target line continues;
+;;                X beyond a FREE target end by at most WWE_CORNER_DISTANCE -> L
+;;                (target end extended); otherwise refused
+;;  collinear     spans the extended end passes on its own line are absorbed (the
+;;                extended span replaces them; their branches stay T); a continuation
+;;                past X is refused
+;;  refused       parallel, behind the fixed end, target out of reach, target end
+;;                connected elsewhere, X already a junction of other walls, ambiguous
+;;                continuation / overshoot, corridor obstructions (existing rules)
+(defun wt:wwe-plan (m tg / w tw net pe pf o tu l0 lt lim excl x sx tx typ sop top rems tnew ne d sa sb
+                         msg cur sp nx absorbed m2 topo cor more mm)
+  (setq w (wt:wwe-g m "W") tw (cadr tg) net (wt:net-scan) *wt:tw-net* net
+        pe (wt:wwe-g m "PEXT") pf (wt:wwe-g m "PFIX") o (wt:wwe-g m "O")
+        tu (wt:w-u tw) l0 (wt:dist pe pf) lt (wt:dist (wt:w-p1 tw) (wt:w-p2 tw))
+        lim (wt:cfg "WWE_CORNER_DISTANCE") excl (list (car w) (car tw)) sop "NONE" top "NONE")
+  ;; 1. logical corner
+  (if (< (abs (wt:cross o tu)) *wt:tx-min-sin*)
+    (if (> (abs (wt:cross o (wt:v- (wt:w-p1 tw) pf))) *wt:tol*)
+      (setq msg "\nSelected walls are parallel and cannot form a corner.")
+      (setq sa (wt:dot (wt:v- (wt:w-p1 tw) pf) o) sb (wt:dot (wt:v- (wt:w-p2 tw) pf) o)
+            x (if (< sa sb) (wt:w-p1 tw) (wt:w-p2 tw)) sx (min sa sb) typ "STRAIGHT"
+            msg (if (< sx (- l0 *wt:tol*)) "\nTarget overlaps or lies behind the selected wall end. No change.")))
+    (setq x (wt:xline pf o (wt:w-p1 tw) tu) sx (wt:dot (wt:v- x pf) o)
+          tx (wt:dot (wt:v- x (wt:w-p1 tw)) tu)))
+  ;; 2. source end
+  (if (not msg)
+    (cond
+      ((< sx (- *wt:tol*))
+       (setq msg "\nTarget is behind the selected wall end.\nThe wall cannot pass its other end."))
+      ((<= sx *wt:tol*)
+       (if (wt:on-seg pf (wt:w-p1 tw) (wt:w-p2 tw))
+         (setq sop "REMOVE" rems (list w))
+         (setq msg "\nTarget is behind the selected wall end.\nThe wall cannot pass its other end.")))
+      ((> sx (+ l0 *wt:tol*)) (setq sop "EXTEND"))
+      ((< sx (- l0 *wt:tol*)) (setq sop "TRIM"))))
+  ;; 3. target relationship
+  (if (and (not msg) (/= typ "STRAIGHT"))
+    (cond
+      ((and (> tx *wt:tol*) (< tx (- lt *wt:tol*)))
+       (setq ne (if (< tx (/ lt 2.0)) (wt:w-p1 tw) (wt:w-p2 tw)) d (wt:dist ne x) typ "T")
+       (if (and (<= d lim) (/= sop "REMOVE")
+                (not (wt:on-seg pe (wt:w-p1 tw) (wt:w-p2 tw)))
+                (not (wt:wwe-conn-at ne excl net)))
+         (setq typ "L" top "TRIM" tnew (wt:wwe-moved tw ne x))))
+      ((or (<= (abs tx) *wt:tol*) (<= (abs (- tx lt)) *wt:tol*))
+       (setq sp (wt:wwe-line-spans-at x tu excl net) typ (if sp "T" "L")
+             nx (wt:wwe-overshoots sp x lim net))
+       (cond ((cdr nx) (setq msg "\nAmbiguous target junction. No change."))
+             ((and nx (not (cdr sp))) (setq top "REMOVE" typ "L" rems (append rems nx)))))
+      (t
+       (setq ne (if (< tx 0.0) (wt:w-p1 tw) (wt:w-p2 tw)) d (wt:dist ne x) typ "L")
+       (cond ((> d lim)
+              (setq msg (strcat "\nThe target wall does not reach the connection point (more than "
+                                (wt:fmt lim) " beyond its end). No change.")))
+             ((wt:wwe-conn-at ne excl net)
+              (setq msg "\nThe target wall end is already connected elsewhere. No change."))
+             (t (setq top "EXTEND" tnew (wt:wwe-moved tw ne x)))))))
+  ;; 4. the selected end already sits on the corner: a short overshoot beyond it goes
+  (if (and (not msg) (= sop "NONE") (/= typ "STRAIGHT"))
+    (progn
+      (setq nx (wt:wwe-overshoots (wt:wwe-line-spans-at x o excl net) x lim net))
+      (cond ((cdr nx) (setq msg "\nAmbiguous wall continuation at the connection point. No change."))
+            (nx (setq sop "REMOVE" rems (append rems nx))))))
+  ;; 5. X must not already be a junction of other (crossing) walls
+  (if (not msg)
+    (foreach e (wt:wwe-conn-at x (append excl (mapcar 'car rems)) net)
+      (setq mm (assoc e (car net)))
+      (if (and (not msg)
+               (not (wt:par o (wt:unit (wt:v- (caddr mm) (cadr mm)))))
+               (not (wt:par tu (wt:unit (wt:v- (caddr mm) (cadr mm))))))
+        (setq msg "\nThe connection point is already a junction of other walls. No change."))))
+  ;; 6. forward: absorb collinear spans on the way, then the existing corridor rules
+  (if (and (not msg) (= sop "EXTEND"))
+    (progn
+      (setq cur pe more t)
+      (while (and more (not msg))
+        (setq sp (wt:wwe-line-spans-at cur o (append excl (mapcar 'car absorbed)) net))
+        (cond ((not sp) (setq more nil))
+              ((cdr sp) (setq msg "\nAmbiguous collinear continuation. No change."))
+              ((> (wt:dot (wt:v- (wt:wwe-far-end (car sp) cur) pf) o) (+ sx *wt:tol*))
+               (setq msg "\nThe wall already continues past the connection point. No change."))
+              (t (setq absorbed (cons (car sp) absorbed) cur (wt:wwe-far-end (car sp) cur)))))
+      (cond
+        (msg)
+        ((wt:peq cur x) (if (= top "NONE") (setq msg "\nWall already reaches target.")))
+        (t
+         (setq m2 (wt:wwe-set (wt:wwe-set m "PEXT" cur) "CONN"
+                              (wt:wwe-conn-at cur (cons (car w) (mapcar 'car absorbed)) net))
+               topo (wt:wwe-topo-akd m2))
+         (cond
+           ((member (car topo) '("COMPLEX" "UNSUPPORTED")) (setq msg (wt:wwe-topo-reject (car topo))))
+           ((= (type (setq cor (wt:wwe-corridor m2 tg x topo))) 'STR) (setq msg cor)))))
+      (if (not msg) (setq rems (append rems absorbed)))))
+  ;; 7. a moved target end must not cross another wall on its way
+  (if (and (not msg) (= top "EXTEND"))
+    (foreach mm (car net)
+      (if (and (not msg) (not (member (car mm) excl))
+               (wt:seg-touch (wt:v+ ne (wt:v* (wt:unit (wt:v- x ne)) *wt:tx-tol-col*)) x (cadr mm) (caddr mm))
+               (not (wt:on-seg x (cadr mm) (caddr mm))))
+        (setq msg "\nAnother wall lies between the target wall end and the connection point. No change."))))
+  (if (and (not msg) (= sop "NONE") (= top "NONE") (not rems))
+    (setq msg "\nWall already reaches target."))
+  (setq *wt:tw-net* nil)
+  (wt:dbg (list "WWE PLAN corner" x "type" typ "source" sop "target" top "removed" (length rems) "refusal" msg))
+  (if msg
+    msg
+    (list (cons "X" x) (cons "TYPE" typ) (cons "SRC-OP" sop) (cons "TGT-OP" top)
+          (cons "SRC-NEW" (if (member sop '("EXTEND" "TRIM")) (wt:wwe-moved w pe x)))
+          (cons "TGT-NEW" tnew) (cons "REMOVE" rems) (cons "MOVE" (- sx l0)))))
+
+(defun wt:wwe-new-master (seg th / en)
+  (setq en (wt:pend-make (wt:mk-line (car seg) (cadr seg) (wt:cfg "AXIS_LAYER"))))
+  (list en (car seg) (cadr seg) th "CENTER"))
+
+;; An old node left with exactly two collinear spans of one wall (nothing else meeting)
+;; is healed with WR's join rule: the spans become one master again. -> joined count
+(defun wt:wwe-heal-node (p / net ws mm w2 seg a b d fld n)
+  (setq net (wt:net-scan) n 0
+        fld (list (wt:v+ p '(-1.0 -1.0)) (wt:v+ p '(1.0 -1.0)) (wt:v+ p '(1.0 1.0)) (wt:v+ p '(-1.0 1.0))))
+  (foreach mm (car net)
+    (if (wt:on-seg p (cadr mm) (caddr mm))
+      (setq ws (cons (if (setq w2 (wt:wall-from-master mm (cadr net))) w2 mm) ws))))
+  (if (and (= (length ws) 2) (= (length (car ws)) 5) (= (length (cadr ws)) 5)
+           (setq seg (wt:wr-join (car ws) (cadr ws) (car net) fld)))
+    (progn
+      (setq a (car ws) b (cadr ws) d (entget (car a))
+            d (subst (cons 10 (wt:3d (car seg))) (assoc 10 d) d)
+            d (subst (cons 11 (wt:3d (cadr seg))) (assoc 11 d) d))
+      (wt:pend-modify d)
+      (wt:rebuild (list (list (car a) (car seg) (cadr seg) (wt:w-thk a) "CENTER")) (list b))
+      (wt:reg-add (car a) (wt:w-thk a) "CENTER")
+      (setq n 1)))
+  n)
+
+;; MODIFY: one transaction. Old spans (moved source / target, overshoot and absorbed
+;; pieces) leave through the EW path, the new centred masters enter through the WW path.
+(defun wt:wwe-akd-connect (m tg / p w tw rems gone new sn tn rec)
+  (setq p (wt:wwe-plan m tg))
+  (if (= (type p) 'STR)
+    p
+    (progn
+      (setq w (wt:wwe-g m "W") tw (cadr tg)
+            sn (wt:wwe-g p "SRC-NEW") tn (wt:wwe-g p "TGT-NEW"))
+      (foreach r (append (if sn (list w)) (if tn (list tw)) (wt:wwe-g p "REMOVE"))
+        (if (not (member (car r) gone)) (setq rems (cons r rems) gone (cons (car r) gone))))
+      (wt:pend-begin)
+      (if rems (wt:rebuild nil (reverse rems)))
+      (if sn (setq new (cons (wt:wwe-new-master sn (wt:w-thk w)) new)))
+      (if tn (setq new (cons (wt:wwe-new-master tn (wt:w-thk tw)) new)))
+      (if new (foreach nn (wt:rebuild (reverse new) nil) (wt:reg-add (car nn) (wt:w-thk nn) "CENTER")))
+      ;; old nodes the removed spans leave behind
+      (foreach r rems
+        (foreach q (list (wt:w-p1 r) (wt:w-p2 r))
+          (if (not (wt:peq q (wt:wwe-g p "X"))) (wt:wwe-heal-node q))))
+      (setq rec *wt:pending* *wt:pending* nil)
+      (list rec "\nWall connected." (wt:wwe-g p "MOVE")))))
+
 ;; -> (transaction-record message distance) or a message (no change)
-(defun wt:wwe-execute (m tg / c x d w net pe e k dl nw new rec n o p f obs topo cor)
+(defun wt:wwe-execute (m tg / c x d e dl rec n o p f topo cor)
   (wt:dbg (cons "WWE MOVING WALL source" (cons (wt:wwe-g m "SRC") (wt:wwe-g m "LABEL"))))
   (wt:dbg (list "WWE TARGET source" (car tg) (nth 8 tg) "target supporting line" (caddr tg) (cadddr tg)))
+  (if (and (= (wt:wwe-g m "SRC") "AKD") (= (car tg) "AKD"))
+    (setq c (wt:wwe-akd-connect m tg))
+    (setq c (wt:wwe-generic-execute m tg)))
+  c)
+
+(defun wt:wwe-generic-execute (m tg / c x d e dl rec n o p f topo cor)
   (setq c (wt:wwe-target m tg))
   (cond
     ((= (type c) 'STR) c)
@@ -3763,24 +3980,6 @@
                              (t (strcat (car topo) " -> (end leaves)")))
                        "INTERMEDIATE CROSSES" (cadr cor) "TARGET NODE FREE -> junction")))
        nil))
-    ((= (wt:wwe-g m "SRC") "AKD")
-     (if (<= d *wt:tol*)
-       "\nWall already reaches target."
-       (progn
-         (setq w (wt:wwe-g m "W") net (wt:net-scan) pe (wt:wwe-g m "PEXT"))
-         (wt:pend-begin)
-         ;; old linework of this wall (including the cap at the extended end)
-         (foreach f (cadr net) (if (wt:owned-line-p f w) (wt:pend-erase (car f))))
-         (setq dl (entget (car w)) k (if (wt:peq (wt:pt2 (cdr (assoc 10 dl))) pe) 10 11))
-         (wt:pend-modify (subst (cons k (wt:tx-z3 x (cdr (assoc k dl)))) (assoc k dl) dl))
-         (setq nw (if (= (wt:wwe-g m "END") 0)
-                    (list (car w) x (wt:w-p2 w) (wt:w-thk w) "CENTER")
-                    (list (car w) (wt:w-p1 w) x (wt:w-thk w) "CENTER")))
-         (setq new (wt:rebuild (list nw) nil))
-         (foreach nn new (wt:reg-add (car nn) (wt:w-thk nn) "CENTER"))
-         (wt:dbg (list "WWE CLEANUP AKD master end moved, rebuilt spans" (length new)))
-         (setq rec *wt:pending* *wt:pending* nil)
-         (list rec "\nWall extended." d))))
     (t
      (setq f (wt:wwe-field m x) o (wt:wwe-g m "O"))
      (wt:pend-begin)
@@ -3823,9 +4022,9 @@
 (defun c:WWE (/ *error* m tg res)
   (setq *error* wt:error)
   (wt:begin)
-  (if (setq m (wt:wwe-pick "\nSelect wall to extend: " 'wt:wwe-resolve))
+  (if (setq m (wt:wwe-pick "\nSelect wall end to connect: " 'wt:wwe-resolve))
     (progn
-      (while (and (setq tg (wt:wwe-pick "\nSelect target wall face: " 'wt:wwd-resolve))
+      (while (and (setq tg (wt:wwe-pick "\nSelect target wall: " 'wt:wwd-resolve))
                   (wt:wwe-same-p m tg))
         (princ "\nTarget must be a different wall."))
       (if tg

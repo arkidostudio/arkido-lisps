@@ -7,7 +7,7 @@
 - Reconstruction recognises centered masters only; older eccentric drawings migrate through WR.
 - **TX** — junction cleanup for ordinary LINEs (single lines and double-line walls): collinear merge, L, T, X, caps in a window. AKD wall geometry is protected.
 - **WWD** — wall to distance: moves one wall so a picked face is at a clear distance from a reference face (AKD and ordinary walls).
-- **WWE** — wall extend: extends one wall end to a picked target wall, including L- and T-connected ends.
+- **WWE** — wall connect: connects one wall end to a picked target wall. For AKD walls it plans the connection first (centerline corner, T or L, extend / trim / detach, target end moved up to `WWE_CORNER_DISTANCE`, overshoot pieces removed, collinear runs absorbed) and applies it in one transaction. Ordinary walls: extend only.
 - **TW** — also repairs ordinary double-line walls in the window.
 - Older off-centre walls are refused by WWD / WWE ("Run WR first") and left alone by TX / TW. WR ignores other walls' caps inside a wall's band when auditing.
 

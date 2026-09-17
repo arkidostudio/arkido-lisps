@@ -43,3 +43,5 @@ TW_CONNECT_DISTANCE=150
 TX_CONNECT_DISTANCE=150
 # TX: largest spacing of two parallel lines treated as one wall (double-line junctions)
 TX_WALL_MAX=600
+# WWE: largest distance a FREE target wall end is extended or trimmed to form a corner
+WWE_CORNER_DISTANCE=300

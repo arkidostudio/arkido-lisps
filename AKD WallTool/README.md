@@ -13,7 +13,7 @@ Architectural axes, grids and intelligent 2D walls for AutoCAD. Plain AutoLISP +
 | `WWF` | Wall From Wall | Parallel wall at a clear distance from a clicked wall face. |
 | `EW` | Erase Wall | Erases one wall span and repairs the walls around it. |
 | `WWD` | Wall to Distance | Moves a wall so a picked face is at a clear distance from another wall's face. |
-| `WWE` | Wall Extend | Extends one wall end to a picked target wall. |
+| `WWE` | Wall Connect | Connects one wall end to a picked target wall (extends, trims or detaches as needed). |
 | `TW` | Local Wall Repair | Connection repair: rebuilds and reconnects AKD walls and ordinary double-line walls inside a window. |
 | `TX` | Line Junction Cleanup | Trims/extends ordinary LINEs into clean L, T and X junctions (never touches AKD walls). |
 | `WR` | Wall Repair | Axis repair: audits and repairs wall centerline masters inside a window. |
@@ -55,6 +55,7 @@ Plain `KEY=VALUE` text; `#` starts a comment; `[SECTIONS]` are only for readabil
 | `TW_CONNECT_DISTANCE` | 150 | Largest gap/overshoot TW closes |
 | `TX_CONNECT_DISTANCE` | 150 | Largest trim/extend TX applies automatically |
 | `TX_WALL_MAX` | 600 | Largest spacing of two parallel lines treated as one double-line wall |
+| `WWE_CORNER_DISTANCE` | 300 | Largest distance WWE moves a free end of the TARGET wall to form a corner |
 
 `WW` > Settings shows the loaded file and values, and can reload it.
 
@@ -97,7 +98,15 @@ Select wall face or [Distance/Undo] <Exit>:
 
 **WWD** — `Select wall face to move:`, `Select reference wall face:`, `Enter distance <1200>:`. The whole first wall moves perpendicular to itself so the picked face is at that clear distance from the reference face (it stays on its side; 0 allowed). Walls must be parallel. AKD walls move with their centerline master and are rebuilt with their junctions; ordinary double-line walls are moved and their old and new junctions cleaned. The distance is remembered for the session. One undo step.
 
-**WWE** — `Select wall to extend:` (a face or cap near the end to extend), `Select target wall face:`. Extends only that end along the wall until it reaches the target wall, forming a T there; the other end never moves, and a wall is never shortened (use EW). A free, L- or T-connected end is supported: an old L partner becomes a T branch, and an old T host is crossed (X). Refused with a message, and nothing changed: target behind or parallel, target not reached, something in the way, ambiguous or collinear-connected ends, and mixed AKD / ordinary walls. One undo step.
+**WWE** — `Select wall end to connect:` (a face or cap near the end), `Select target wall:`. Connects that end of that wall span to the target wall; WWE works out whether this means extending, trimming or detaching. For AKD walls:
+- The corner is where the two centerlines meet. Only the selected end moves, along the wall; the other end never moves.
+- Target crossed in its middle: the end runs to it and forms a T (the target does not change).
+- Corner at or just past a free target end (within `WWE_CORNER_DISTANCE`): an L. The target end is extended or trimmed to the corner, and short overshoot pieces left beyond the corner are removed.
+- The selected end may be free or part of an L, T or straight (collinear) run. Going forward, the wall runs through its old junction (an old L partner becomes a T branch, an old T host is crossed), and collinear spans it passes become part of it (their branches stay). Going back to a target that crosses the wall, the piece beyond it is removed and the old junction is repaired (an old T host becomes continuous, an old L partner gets its cap).
+- Collinear target: a straight continuation.
+- Refused with a message, nothing changed: parallel walls, a corner behind the fixed end, a target end out of reach or already connected elsewhere, a corner that is already a junction of other walls, ambiguous continuations, walls or other linework in the way, legacy off-centre walls.
+- Widths and creation alignment don't matter; masters stay centred. One undo step.
+For ordinary double-line walls WWE still only extends an end to a target face (forward), and junctions between AKD and ordinary walls are refused.
 
 **TX** — preselect LINEs, or `Specify first corner of repair area:` / `Specify opposite corner:`. Repairs ordinary line geometry on any layer: merges collinear pieces and small gaps, closes L and T corners of single lines and of double-line walls (up to `TX_WALL_MAX` apart), cuts clean X crossings, and caps free double-line wall ends inside a window. X-AXIS lines and lines belonging to AKD walls (including older off-centre walls) are left alone and counted. Ambiguous junctions are left unchanged. One undo step.
 
@@ -148,7 +157,7 @@ Select wall face or [Distance/Undo] <Exit>:
 
 **WWD / WWE / TX**
 - WWD needs parallel walls.
-- WWE never shortens, does not extend a collinear-connected end, and refuses junctions between AKD and ordinary walls.
+- WWE on ordinary double-line walls only extends forward; smart corners, trimming and detaching are for AKD walls. Junctions between AKD and ordinary walls are refused. A target end is only moved when it is free and within `WWE_CORNER_DISTANCE`.
 - TX only works on ordinary LINEs; it leaves AKD wall geometry to the wall commands.
 
 ## Tests

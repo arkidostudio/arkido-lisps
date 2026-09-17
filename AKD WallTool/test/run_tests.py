@@ -1931,6 +1931,133 @@ chk('WWE after WR on the former legacy wall: extended to the target centreline, 
     okx(r) and mk((0,100),(8000,100)) in master_set() and master_offsets_ok() and normalized_ok()
     and same_lines(walls_now(), expected([wall((0,100),(8000,100),200), wall((8000,-3000),(8000,3000),150)])))
 
+# =========================== WWE intelligent connection (AKD) ===========================
+def ref_masters(final):
+    build(final); return master_set()
+def wconn(sw, sfrac, tw_, tfrac, sside=1, tside=1):
+    e1, q1 = face_pick(sw, sside, sfrac); e2, q2 = face_pick(tw_, tside, tfrac)
+    return wwe(e1, q1, e2, q2)
+def conn_ok(r, final, refm):
+    return okx(r) and 'connected' in r[1] and master_set() == refm and master_offsets_ok() and normalized_ok() \
+           and no_zero_masters() and same_lines(walls_now(), expected(final))
+def scen(setup, pick, final, name):
+    refm = ref_masters(final)
+    fresh(); setup(); A.ev('(setq *wt:reg* nil)') if False else None
+    r = pick()
+    chk(name, conn_ok(r, final, refm))
+    return r
+C = lambda a, b, th=150.0: wall(a, b, th)
+def mk_walls(*ws):
+    for a, b, th, pos in ws: settings(th, pos); add((a, b))
+# 1 free -> midspan (T)
+S1, T1 = C((0,0),(0,2000)), C((-3000,4000),(3000,4000))
+scen(lambda: mk_walls(S1, T1), lambda: wconn(S1, 0.95, T1, 0.2), [C((0,0),(0,4000)), T1], 'WWE connect 1: free end -> target midspan -> T, target unchanged')
+# 2 free -> target end (L)
+S2, T2 = C((0,0),(4000,0)), C((5000,0),(5000,3000))
+scen(lambda: mk_walls(S2, T2), lambda: wconn(S2, 0.95, T2, 0.5), [C((0,0),(5000,0)), T2], 'WWE connect 2: free end -> target end -> L')
+# 3 both short (smart fillet: extend + extend)
+T3 = C((5000,200),(5000,3000))
+r3 = scen(lambda: mk_walls(S2, T3), lambda: wconn(S2, 0.95, T3, 0.5), [C((0,0),(5000,0)), C((5000,0),(5000,3000))], 'WWE connect 3: both walls short -> both extended to the centreline corner, L')
+# 4 source short + target overshoot (extend + trim)
+T4 = C((5000,-200),(5000,3000))
+scen(lambda: mk_walls(S2, T4), lambda: wconn(S2, 0.95, T4, 0.5), [C((0,0),(5000,0)), C((5000,0),(5000,3000))], 'WWE connect 4: source short + target overshoot -> extend + trim, clean L, no stub')
+# 5 source overshoot + target short (trim + extend)
+S5 = C((0,0),(5200,0))
+scen(lambda: mk_walls(S5, T3), lambda: wconn(S5, 0.98, T3, 0.5), [C((0,0),(5000,0)), C((5000,0),(5000,3000))], 'WWE connect 5: source overshoot + target short -> trim + extend, clean L')
+# 6 both overshoot (crossing already normalized): pick the source overshoot piece
+scen(lambda: mk_walls(S5, T4), lambda: wconn(C((5000,0),(5200,0)), 0.6, C((5000,0),(5000,3000)), 0.6),
+     [C((0,0),(5000,0)), C((5000,0),(5000,3000))], 'WWE connect 6: both overshoot -> both overshoot pieces removed, clean L, no hidden spans')
+# 7a existing L -> target ahead (through the old corner)
+P7, T7 = C((4000,0),(4000,3000)), C((8000,-3000),(8000,3000))
+scen(lambda: mk_walls(S2, P7, T7), lambda: wconn(S2, 0.9, T7, 0.2, sside=-1), [C((0,0),(8000,0)), P7, T7],
+     'WWE connect 7a: L end -> target ahead: old partner becomes a T branch, new T at target')
+# 7b existing L -> target crossing the wall (detach): old partner left as a free wall
+T7b = C((2000,-3000),(2000,3000))
+scen(lambda: mk_walls(S2, P7, T7b), lambda: wconn(C((2000,0),(4000,0)), 0.8, T7b, 0.2, sside=-1), [C((0,0),(2000,0)), P7, T7b],
+     'WWE connect 7b: L end -> target behind: end detached, old partner capped, new T')
+# 8a existing T -> target beyond the host (CROSS)
+H8, B8, T8 = C((0,0),(6000,0)), C((3000,-3000),(3000,0)), C((0,2000),(6000,2000))
+scen(lambda: mk_walls(H8, B8, T8), lambda: wconn(B8, 0.9, T8, 0.2), [H8, C((3000,-3000),(3000,2000)), T8],
+     'WWE connect 8a: T end -> target beyond the host: through the host (CROSS), new T')
+# 8b existing T -> target behind (detach): host continuous again
+T8b = C((0,-1500),(6000,-1500))
+scen(lambda: mk_walls(H8, B8, T8b), lambda: wconn(C((3000,-1500),(3000,0)), 0.5, T8b, 0.2), [H8, C((3000,-3000),(3000,-1500)), T8b],
+     'WWE connect 8b: T end -> target behind: branch detached, old host continuous, new T')
+# 9 THE MAC CASE: end at a collinear continuation (+ branch) -> target ahead
+L9, R9, BR9, T9 = C((0,0),(7000,0)), C((7000,0),(10000,0)), C((7000,0),(7000,3000)), C((13000,-3000),(13000,3000))
+r9 = scen(lambda: mk_walls(L9, R9, BR9, T9), lambda: wconn(L9, 0.97, T9, 0.2, sside=-1), [C((0,0),(13000,0)), BR9, T9],
+          'WWE connect 9 (Mac case): span end at a collinear node with a branch -> connected, branch kept as T, no duplicate spans')
+chk('WWE connect 9 (Mac case): no "collinear continuation ... not supported" refusal', okx(r9) and 'not supported' not in str(r9))
+scen(lambda: mk_walls(L9, R9, T9), lambda: wconn(L9, 0.97, T9, 0.2, sside=-1), [C((0,0),(13000,0)), T9],
+     'WWE connect 9b: span end at a plain collinear node (WW straight run) -> whole run reaches the target')
+# 10 collinear + branch -> target behind (detach): right span + branch become an L
+T10 = C((3000,-3000),(3000,3000))
+scen(lambda: mk_walls(L9, R9, BR9, T10), lambda: wconn(C((3000,0),(7000,0)), 0.9, T10, 0.2, sside=-1),
+     [C((0,0),(3000,0)), R9, BR9, T10], 'WWE connect 10: collinear node + branch, target behind -> span detached, right span + branch left as clean L')
+# 11 two separate collinear walls -> straight
+T11 = C((5000,0),(9000,0))
+scen(lambda: mk_walls(S2, T11), lambda: wconn(S2, 0.9, T11, 0.5), [C((0,0),(5000,0)), T11],
+     'WWE connect 11: collinear gap -> straight continuation, faces continuous')
+# 12 parallel non-collinear -> refused
+fresh(); mk_walls(S2, C((0,2000),(4000,2000))); before = geo()
+r = wconn(S2, 0.9, C((0,2000),(4000,2000)), 0.5)
+chk('WWE connect 12: parallel walls refused, no change', isinstance(r, str) and 'parallel' in r and geo() == before)
+# 13 mixed thickness
+S13, T13 = C((0,0),(4000,0),200.0), C((5000,200),(5000,3000),100.0)
+scen(lambda: mk_walls(S13, T13), lambda: wconn(S13, 0.95, T13, 0.5), [C((0,0),(5000,0),200.0), C((5000,0),(5000,3000),100.0)],
+     'WWE connect 13: 200 + 100 smart fillet, widths kept')
+# 14/15 source created LEFT / RIGHT
+for pos, cy in (('LEFT', 100.0), ('RIGHT', -100.0)):
+    def setup(pos=pos, cy=cy):
+        settings(200, pos); add(((0,0),(4000,0))); settings(150, 'CENTER'); add(((5000,cy+200),(5000,3000)))
+    scen(setup, lambda cy=cy: wconn(C((0,cy),(4000,cy),200.0), 0.95, C((5000,cy+200),(5000,3000)), 0.5),
+         [C((0,cy),(5000,cy),200.0), C((5000,cy),(5000,3000))], f'WWE connect {14 if pos=="LEFT" else 15}: source drawn {pos} -> centreline corner, master centred')
+# 16/17 target created LEFT / RIGHT
+for pos, cx in (('LEFT', 4900.0), ('RIGHT', 5100.0)):
+    def setup(pos=pos):
+        settings(150, 'CENTER'); add(((0,0),(4000,0))); settings(200, pos); add(((5000,200),(5000,3000)))
+    scen(setup, lambda cx=cx: wconn(S2, 0.95, C((cx,200),(cx,3000),200.0), 0.5),
+         [C((0,0),(cx,0)), C((cx,0),(cx,3000),200.0)], f'WWE connect {16 if pos=="LEFT" else 17}: target drawn {pos} -> centreline corner, master centred')
+# 20 ambiguity / reach refusals
+fresh(); mk_walls(S2, T2, C((5000,0),(7000,-2000))); before = geo()
+r = wconn(S2, 0.95, T2, 0.5)
+chk('WWE connect 20: corner already a junction of other walls -> refused, no change', isinstance(r, str) and 'junction' in r and geo() == before)
+fresh(); mk_walls(S2, T3, C((5000,200),(7000,200))); before = geo()
+r = wconn(S2, 0.95, T3, 0.5)
+chk('WWE connect: target end connected elsewhere -> refused, no change', isinstance(r, str) and 'connected elsewhere' in r and geo() == before)
+fresh(); mk_walls(S2, C((5000,500),(5000,3000))); before = geo()
+r = wconn(S2, 0.95, C((5000,500),(5000,3000)), 0.5)
+chk('WWE connect: target end more than WWE_CORNER_DISTANCE away -> refused, no change', isinstance(r, str) and 'does not reach' in r and geo() == before)
+fresh(); mk_walls(S2, C((-1000,-3000),(-1000,3000))); before = geo()
+r = wconn(S2, 0.95, C((-1000,-3000),(-1000,3000)), 0.5)
+chk('WWE connect: corner behind the fixed end -> refused, no change', isinstance(r, str) and 'behind' in r and geo() == before)
+# 21 / 22 undo
+fresh(); mk_walls(S1, T1); before = geo(); ents = {e: list(A.DB[e]) for e, a, b in masters_now()}
+r = wconn(S1, 0.95, T1, 0.2); undo_rec(r[0])
+chk('WWE connect 21: Undo after a source-only move restores the drawing exactly', geo() == before and all(e not in A.DELETED and A.DB[e] == d for e, d in ents.items()))
+fresh(); mk_walls(S2, T3); before = geo(); ents = {e: list(A.DB[e]) for e, a, b in masters_now()}
+r = wconn(S2, 0.95, T3, 0.5); undo_rec(r[0])
+chk('WWE connect 22: Undo after source + target moves restores the drawing exactly', geo() == before and all(e not in A.DELETED and A.DB[e] == d for e, d in ents.items()))
+# 23 rollback when a later step fails
+fresh(); mk_walls(S2, T3); before = geo()
+A.ev('(progn (setq *t-rb* wt:rebuild *t-n* 0) (defun wt:rebuild (new removed) (setq *t-n* (1+ *t-n*)) (if (> *t-n* 1) (wt:t-boom)) (apply *t-rb* (list new removed))))')
+failed = False
+try: wconn(S2, 0.95, T3, 0.5)
+except A.LispError: failed = True
+A.ev('(progn (setq wt:rebuild *t-rb*) (wt:error "test abort"))')
+chk('WWE connect 23: a failure after the old spans were removed rolls everything back', failed and geo() == before)
+# command prompts + message
+fresh(); mk_walls(S2, T3)
+e1, q1 = face_pick(S2, 1, 0.95); e2, q2 = face_pick(T3, 1, 0.5)
+A.ENTSELQ[:] = [[e1, [q1[0], q1[1], 0.0]], [e2, [q2[0], q2[1], 0.0]]]
+out = io.StringIO(); A.OUTPUT = True
+with contextlib.redirect_stdout(out): A.ev('(c:WWE)')
+A.OUTPUT = False
+src_l = open(os.path.join(HERE, '..', 'WallTool.lsp')).read()
+chk('WWE command: "Select wall end to connect" / "Select target wall", reports Wall connected',
+    'Wall connected' in out.getvalue() and '"\\nSelect wall end to connect: "' in src_l and '"\\nSelect target wall: "' in src_l
+    and mk((0,0),(5000,0)) in master_set())
+
 # --- TX protects AKD wall geometry (integration) ---
 build([wall((0,0),(6000,0))]); add(((3000,0),(3000,3000))); akd_before = geo()
 akd_ids = [e for e, a, b in walls_now()] + [e for e, a, b in masters_now()]
