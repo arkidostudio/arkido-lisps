@@ -16,7 +16,7 @@ Architectural axes, grids and intelligent 2D walls for AutoCAD. Plain AutoLISP +
 | `WWE` | Wall Connect | Connects one wall end to a picked target wall (extends, trims or detaches as needed). |
 | `TW` | Local Wall Repair | Connection repair: rebuilds and reconnects AKD walls and ordinary double-line walls inside a window. |
 | `TX` | Line Junction Cleanup | Trims/extends ordinary LINEs into clean L, T and X junctions (never touches AKD walls). |
-| `WR` | Wall Repair | Axis repair: audits and repairs wall centerline masters inside a window. |
+| `WWR` | Wall Repair | Axis repair: audits and repairs wall centerline masters inside a window. |
 
 ## How it works
 
@@ -120,22 +120,41 @@ For ordinary double-line walls WWE still only extends an end to a target face (f
 - Walls are never moved sideways or rotated. An end with more than one possible connection is left alone and reported.
 - One undo step; running TW again on the same window changes nothing.
 
-**WR** — `Specify first corner of wall repair area:` / `Specify opposite corner:`. Audits the wall masters inside the window:
+**WWR** — `Specify first corner of wall repair area:` / `Specify opposite corner:`. Audits the wall masters inside the window:
 - A master with a pair of wall faces around it is checked against their midline; an off-centre master (moved by hand, or an older drawing whose master sits on a face) is moved to the true center and takes the thickness from the faces. Walls it touched stay connected.
 - A master that is a known wall but has lost its faces is kept and its faces are regenerated.
 - A wall with faces but no master gets a new centerline master, but only when both ends are proven: each end must meet a known wall (junction) or be closed by a cap across the wall. Loose parallel lines are never turned into walls, and plain AX axes are left alone.
 - Broken masters are joined: collinear pieces of the same wall (same thickness, touching or overlapping, joint inside the window) become one master, unless another wall meets at the joint.
-- Masters are then split at junctions and all walls in the window are rebuilt. One undo step; running WR again on a healthy area changes nothing.
-- Output: `WR: N wall(s) checked. N axis/axes adjusted. N missing axis/axes rebuilt.` or `No axis repairs required.`
-- TW = connection repair (gaps, overshoots, reconnecting). WR = master/axis repair (what the walls are). TX = junction repair of ordinary lines. WWD / WWE = editing walls. Open older drawings and run WR over them to migrate eccentric masters to centerlines; nothing is migrated automatically on load.
+- Masters are then split at junctions and all walls in the window are rebuilt. One undo step; running WWR again on a healthy area changes nothing.
+- Output: `WWR: N wall(s) checked. N axis/axes adjusted. N missing axis/axes rebuilt.` or `No axis repairs required.`
+- TW = connection repair (gaps, overshoots, reconnecting). WWR = master/axis repair (what the walls are). TX = junction repair of ordinary lines. WWD / WWE = editing walls. Open older drawings and run WWR over them to migrate eccentric masters to centerlines; nothing is migrated automatically on load.
 
 ## Local axis healing
 
-WW and WWE finish by cleaning only the master nodes their own operation touched (`wt:axis-heal-local`): a node where exactly two collinear spans of one wall meet and nothing else is joined back into one master, and zero-length or duplicate masters there are removed. Nodes that still mean something (T, X, L, width steps) stay split. It is part of the same undo step. Other damage in the drawing is left to WR; WWF, XW, EW and TW do not heal.
+WW and WWE finish by cleaning only the master nodes their own operation touched (`wt:axis-heal-local`): a node where exactly two collinear spans of one wall meet and nothing else is joined back into one master, and zero-length or duplicate masters there are removed. Nodes that still mean something (T, X, L, width steps) stay split. It is part of the same undo step. Other damage in the drawing is left to WWR; WWF, XW, EW and TW do not heal.
+
+## Openings (AKD WinDoor and other tools)
+
+WallTool owns the wall; an opening tool (AKD WinDoor) owns doors and windows. WallTool reads no XData and knows no other tool: a tool registers function symbols, in any load order, idempotently:
+
+| Hook | Called as | Returns / does |
+|---|---|---|
+| `*wt:opening-fns*` | `(fn)` | `((mid dir width id) ...)`: `mid` on the wall centerline, `dir` along the wall, `width` along the wall, `id` opaque to WallTool |
+| `*wt:wall-moved-fns*` | `(fn ids vector)` | moves those openings (WWD) |
+| `*wt:opening-removed-fns*` | `(fn ids)` | deletes those openings (their wall is gone) |
+
+Event functions return their changes as `(created erased modified-old-data)` so WallTool's rollback covers them. Opening tools call `wt:api-opening-status` (`"OK"` / `"AMBIG"` / `"NONE"`) and `wt:api-openings-changed` (regenerate the walls holding the given `(mid dir width)` openings).
+
+- Every wall rebuild (WW, XW, EW, WWF, WWD, WWE, TW, WWR, axis healing) draws **wall minus registered openings**: the face gap and both jambs are part of the outline. Old jambs are erased first; overlapping openings form one void.
+- An opening belongs to a wall only when exactly one logical wall (collinear spans with one band) contains its midpoint, the whole opening lies inside that wall and no other wall's body reaches it. The association is recomputed from geometry every time, so it survives splits at T/X, joins, reloads and Undo.
+- No wall → ignored. Several walls, a junction inside the opening, or an opening past the wall end → not kept and reported (`... hole not kept.`). The object itself is left alone.
+- WWD moves the openings lying on the moved wall by the same vector. A wall span removed by EW, TW or WWE takes its openings with it unless a wall still holds them when the command ends (WWE replacing a span keeps them). WWF and XW never copy openings.
+- WWR and TW treat a registered opening as intentional: jambs are not wall ends, the face gap is not damage, and TX leaves jambs alone. Holes without a registered object are ordinary damage and are closed.
+- Malformed records and undefined hooks are skipped. A hook that raises an error aborts the command and the transaction is rolled back.
 
 ## Native AutoCAD STRETCH
 
-Walls are ordinary lines, so STRETCH works on them. WallTool reads wall geometry from the drawing every time; the session only remembers each master's thickness. A complete stretch (axis and faces moved together) leaves a valid wall that EW, WWF, WWD, WWE, TW and WR use as is. A partial stretch breaks the wall/axis relationship: the axis stays authoritative, and WR rebuilds the faces from it, or re-centres an axis moved sideways as a whole. An axis stretched at one end only no longer lies between its faces: it is not treated as a wall, and WR skips it as ambiguous for you to fix.
+Walls are ordinary lines, so STRETCH works on them. WallTool reads wall geometry from the drawing every time; the session only remembers each master's thickness. A complete stretch (axis and faces moved together) leaves a valid wall that EW, WWF, WWD, WWE, TW and WWR use as is. A partial stretch breaks the wall/axis relationship: the axis stays authoritative, and WWR rebuilds the faces from it, or re-centres an axis moved sideways as a whole. An axis stretched at one end only no longer lies between its faces: it is not treated as a wall, and WWR skips it as ambiguous for you to fix.
 
 ## Known limitations
 
@@ -153,10 +172,17 @@ Walls are ordinary lines, so STRETCH works on them. WallTool reads wall geometry
 - Wall commands scan all X-AXIS / A-WALL lines in the current space, which may be slow on very large drawings.
 - Geometry is flattened to Z = 0 WCS. Arcs are not supported.
 - Pick points and windows in a rotated UCS are not yet confirmed in AutoCAD.
-- Legacy drawings are only migrated by WR. Until then, a master that is not centered between its faces is not recognised as a wall by EW, WWF or TW, and WWD / WWE refuse it with "Legacy wall axis detected. Run WR first."; TX and TW leave its lines alone.
-- WR needs both faces of a wall beside a master. A master lying exactly on a face with other parallel wall faces on its other side is ambiguous and skipped. Two neighbouring walls that have both lost their masters at the same corner (no cap, no known wall at that end) are not reconstructed.
-- WR cleanup erases unclaimed A-WALL pieces inside the window next to the walls it repairs.
-- `WW`, `AX` and `EW` share names with older AKDWall / AKDAxisTool / AKDDoorWin tools; do not load both.
+- Legacy drawings are only migrated by WWR. Until then, a master that is not centered between its faces is not recognised as a wall by EW, WWF or TW, and WWD / WWE refuse it with "Legacy wall axis detected. Run WWR first."; TX and TW leave its lines alone.
+- WWR needs both faces of a wall beside a master. A master lying exactly on a face with other parallel wall faces on its other side is ambiguous and skipped. Two neighbouring walls that have both lost their masters at the same corner (no cap, no known wall at that end) are not reconstructed.
+- WWR cleanup erases unclaimed A-WALL pieces inside the window next to the walls it repairs.
+- `WW`, `AX` and `EW` share names with older AKDWall / AKDAxisTool tools; do not load both. AKD WinDoor uses `EDW` / `WRN` and loads alongside WallTool.
+
+**Openings**
+- Openings are straight only. Corner windows (AKD WinDoor `AXW` / `HHX`) are not registered and are closed by a wall rebuild.
+- An opening overlapping an L/T/X node, reaching a wall end, or lying in overlapping walls is not kept (reported).
+- WWD moves only openings lying wholly on the moved span; one straddling a node with another span stays put and is reported if it no longer fits.
+- A hole cut without a door/window (`HH`) is not registered; the next rebuild closes it.
+- WWR only reconstructs a wall across an opening when the registered object is still there.
 
 **TW**
 - A master moved sideways in an older or reloaded drawing may not be identifiable if its old faces no longer correspond to it.

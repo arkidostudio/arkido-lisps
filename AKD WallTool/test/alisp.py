@@ -225,7 +225,9 @@ def lisptype(x):
     if isinstance(x, float): return Sym('REAL')
     if isinstance(x, Sym): return Sym('SYM')
     if isinstance(x, str): return Sym('STR')
+    if isinstance(x, list) and x and x[0] == 'LAMBDA': return Sym('USUBR')
     if isinstance(x, (list, Pair)): return Sym('LIST')
+    if isinstance(x, Ename): return Sym('ENAME')
     return Sym('SUBR')
 
 def distof(s, mode=2):
@@ -285,7 +287,7 @@ B_ = {
  'MEMBER': lambda x, l: next((L(l[i:]) for i in range(len(l or [])) if equal(x, l[i])), None),
  'ASSOC': lambda k, l: next((e for e in (l or []) if equal(car(e), k)), None),
  'LISTP': lambda x: B(x is None or isinstance(x, (list, Pair))), 'TYPE': lisptype,
- 'MAPCAR': mapcar, 'APPLY': lambda f, args: call(f, list(args or []), []),
+ 'MAPCAR': mapcar, 'APPLY': lambda f, args: call(f, list(args or []), []), 'EVAL': lambda x: lisp_eval(x, {}), 'SET': lambda k, v: (G.__setitem__(k, v), v)[1],
  'STRCAT': lambda *a: ''.join(a), 'STRLEN': len, 'SUBSTR': lambda s, i, n=None: s[i - 1:] if n is None else s[i - 1:i - 1 + n],
  'STRCASE': lambda s, lower=None: s.lower() if lower else s.upper(), 'CHR': chr, 'ASCII': lambda s: ord(s[0]) if s else 0,
  'ITOA': str, 'ATOI': lambda s: int(float(s)) if distof(s) is not None else 0, 'ATOF': lambda s: distof(s) or 0.0,
@@ -326,26 +328,53 @@ def _clean(d):
     return [e for e in d if car(e) != -1]
 def entmake(d):
     e = Ename(); DB[e] = _clean(d); LAST[0] = e; return d
-def entget(e):
+def _xd(d):
+    return next((x for x in d if car(x) == -3), None)
+def entget(e, apps=None):
     if e is None or e not in DB or e in DELETED: return None
-    return [Pair(-1, e)] + list(DB[e])
+    d = [x for x in DB[e] if car(x) != -3]
+    x = _xd(DB[e])
+    if apps and x is not None:
+        keep = [a for a in (cdr(x) or []) if any(wcmatch(car(a).upper(), w.upper()) for w in apps)]
+        if keep: d.append(L([-3] + keep))
+    return [Pair(-1, e)] + d
 def entmod(d):
     e = next(x.d for x in d if isinstance(x, Pair) and x.a == -1)
     if e not in DB or e in DELETED: return None
-    DB[e] = _clean(d); return d
+    old, new = _xd(DB[e]), _xd(d)
+    apps = {car(a): a for a in (cdr(old) or [])} if old is not None else {}
+    for a in (cdr(new) or []) if new is not None else []: apps[car(a)] = a
+    DB[e] = [x for x in _clean(d) if car(x) != -3] + ([L([-3] + list(apps.values()))] if apps else [])
+    return d
 def entdel(e):
     if e in DELETED: DELETED.discard(e)
     else: DELETED.add(e)
     return e
+def _match_one(data, f):
+    k = car(f)
+    if k == 410: return True
+    if k == -3:
+        x = _xd(data)
+        have = [car(a).upper() for a in (cdr(x) or [])] if x is not None else []
+        return all(any(wcmatch(h, car(w).upper()) for h in have) for w in (cdr(f) or []))
+    v = cdr(f)
+    got = cdr(next((x for x in data if car(x) == k), Pair(k, None)))
+    if k in (0, 2, 8): return bool(got) and bool(wcmatch(got.upper(), v.upper()))
+    return got == v
 def _match(data, filt):
-    for f in (filt or []):
-        k, v = car(f), cdr(f)
-        if k == 410: continue
-        got = cdr(next((x for x in data if car(x) == k), Pair(k, None)))
-        if k == 8:
-            if not got or not wcmatch(got.upper(), v.upper()): return False
-        elif got != v: return False
-    return True
+    items, pos = list(filt or []), [0]
+    def one():
+        f = items[pos[0]]; pos[0] += 1
+        if car(f) == -4 and cdr(f).upper() in ('<OR', '<AND'):
+            res = []
+            while not (car(items[pos[0]]) == -4 and cdr(items[pos[0]]).upper() in ('OR>', 'AND>')):
+                res.append(one())
+            pos[0] += 1
+            return any(res) if cdr(f).upper() == '<OR' else all(res)
+        return _match_one(data, f)
+    ok = True
+    while pos[0] < len(items): ok = one() and ok
+    return ok
 def ssget(*args):
     if args and args[0] == '_I':
         sel = SSFIRST[0] or []
@@ -360,7 +389,12 @@ def sssetfirst(*a): SSFIRST[0] = None; return None
 for k, v in {'ENTMAKE': entmake, 'ENTGET': entget, 'ENTMOD': entmod, 'ENTDEL': entdel, 'ENTLAST': lambda: LAST[0],
              'SSGET': ssget, 'SSLENGTH': len, 'SSNAME': lambda s, i: s[i], 'SSSETFIRST': sssetfirst,
              'GETVAR': lambda n: {'CTAB': 'Model'}.get(n.upper(), 0), 'TBLSEARCH': lambda *a: T,
-             'REDRAW': lambda *a: None, 'SUBST': lambda new, old, l: L(new if equal(x, old) else x for x in (l or []))}.items():
+             'REDRAW': lambda *a: None, 'ENTMAKEX': lambda d: (entmake(d), LAST[0])[1],
+             'DISTANCE': lambda a, b: math.dist(list(a)[:2], list(b)[:2]), 'REGAPP': lambda a: a,
+             'NAMEDOBJDICT': lambda: None, 'DICTSEARCH': lambda *a: None,
+             'VL-REMOVE': lambda x, l: L(y for y in (l or []) if not equal(x, y)),
+             'VL-REMOVE-IF': lambda f, l: L(y for y in (l or []) if call(f, [y], []) is None),
+             'VL-REMOVE-IF-NOT': lambda f, l: L(y for y in (l or []) if call(f, [y], []) is not None), 'SUBST': lambda new, old, l: L(new if equal(x, old) else x for x in (l or []))}.items():
     G[Sym(k)] = v
 
 def db_reset():

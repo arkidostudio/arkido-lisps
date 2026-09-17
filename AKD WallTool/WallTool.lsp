@@ -1,5 +1,5 @@
 ;;; WallTool.lsp -- AKD WallTool v0.1.0 (Stage 1: 2D Wall Core)
-;;; Commands: AX (axis), ZXW (grid axis), WW (wall), XW (axis to wall), EW (erase wall), WWF (wall from wall), WWD (wall to distance), WWE (wall connect), TW (connection repair), TX (line junction cleanup), WR (wall/axis repair)
+;;; Commands: AX (axis), ZXW (grid axis), WW (wall), XW (axis to wall), EW (erase wall), WWF (wall from wall), WWD (wall to distance), WWE (wall connect), TW (connection repair), TX (line junction cleanup), WWR (wall/axis repair)
 ;;; Plain AutoLISP + DCL only (no VL/VLA/VLAX, no XData). AutoCAD Mac + Windows.
 ;;;
 ;;; Model:  MASTER AXIS -> THICKNESS + POSITION -> THEORETICAL STRIP
@@ -279,7 +279,7 @@
 
 (defun wt:error (msg)
   (if *wt:pending* (wt:seg-undo *wt:pending*))
-  (setq *wt:pending* nil *wt:tx-field* nil *wt:tx-nested* nil)
+  (setq *wt:pending* nil *wt:tx-field* nil *wt:tx-nested* nil *wt:op-sus* nil *wt:op-amb* nil *wt:op-cache* nil)
   (if (not (wcmatch (strcase msg) "*CANCEL*,*QUIT*,*EXIT*,*BREAK*"))
     (princ (strcat "\nError: " msg)))
   (wt:end))
@@ -541,13 +541,15 @@
     (if (or (not out) (> (- s (car out)) *wt:tol*)) (setq out (cons s out))))
   (reverse out))
 
-;; visible runs of an edge: a piece is visible when exactly one side is inside the union
-(defun wt:edge-visible (a b polys cutters / u nn ts s0 m run out)
+(defun wt:solid-p (p polys voids) (and (wt:inside-any p polys) (not (wt:inside-any p voids))))
+
+;; visible runs of an edge: a piece is visible when exactly one side is solid (in the union, not in a void)
+(defun wt:edge-visible (a b polys voids cutters / u nn ts s0 m run out)
   (setq u (wt:unit (wt:v- b a)) nn (wt:v* (wt:perp u) *wt:tol-side*)
         ts (wt:edge-cuts a b cutters) s0 (car ts))
   (foreach s1 (cdr ts)
     (setq m (wt:v+ a (wt:v* u (/ (+ s0 s1) 2.0))))
-    (if (not (eq (wt:inside-any (wt:v+ m nn) polys) (wt:inside-any (wt:v- m nn) polys)))
+    (if (not (eq (wt:solid-p (wt:v+ m nn) polys voids) (wt:solid-p (wt:v- m nn) polys voids)))
       (setq run (list (if run (car run) s0) s1))
       (if run (setq out (cons run out) run nil)))
     (setq s0 s1))
@@ -556,18 +558,246 @@
 
 ;; walls: all participating walls; regen: indices whose linework is emitted.
 ;; Returns list of segments (a b).
-(defun wt:topo-linework (walls regen / res strips hubs polys cutters cand i runs out)
+;;; --- Openings: registered architectural voids (doors/windows owned by other tools) ---
+;;; WallTool reads no XData and knows no other tool. Tools register provider SYMBOLS
+;;; (idempotently, in any load order) in these lists:
+;;;   *wt:opening-fns*          (fn)          -> ((mid dir width id) ...) for the current space;
+;;;                                              mid on the wall centerline, dir along the wall,
+;;;                                              width along the wall, id opaque (may be nil)
+;;;   *wt:wall-moved-fns*       (fn ids vec)  move those openings by vec (a WWD wall move)
+;;;   *wt:opening-removed-fns*  (fn ids)      delete those openings (their wall is gone)
+;;; Event functions return their drawing changes as (created erased modified-old-data)
+;;; (or nil) so WallTool's own rollback covers them; the AutoCAD undo group covers the rest.
+;;; Association is geometric and recomputed every time (survives splits, joins, Undo):
+;;; an opening belongs to a wall when exactly one logical wall (collinear spans sharing
+;;; one band) contains its midpoint, the whole opening lies inside that wall and no other
+;;; wall body reaches it. None -> ignored. Several / junction / past the wall end ->
+;;; AMBIG: not preserved, reported. Malformed records are skipped; a provider that
+;;; raises an error aborts the command through wt:error (transaction rolled back).
+
+(setq *wt:op-tol* 0.01)
+(setq *wt:op-cache* nil *wt:op-sus* nil *wt:op-amb* nil *wt:op-net* nil *wt:op-skip* nil *wt:op-extra* nil)
+
+(defun wt:num-p (x) (member (type x) '(INT REAL)))
+(defun wt:pt-p (p)
+  (and (= (type p) 'LIST) (wt:num-p (car p)) (= (type (cdr p)) 'LIST) (wt:num-p (cadr p))))
+
+(defun wt:op-valid-p (r)
+  (and (= (type r) 'LIST) (wt:pt-p (car r))
+       (= (type (cdr r)) 'LIST) (wt:pt-p (cadr r))
+       (> (wt:len (wt:pt2 (cadr r))) 1e-9)
+       (= (type (cddr r)) 'LIST) (wt:num-p (caddr r)) (> (caddr r) *wt:tol*)
+       (or (not (cdddr r)) (= (type (cdddr r)) 'LIST))))
+
+;; internal opening = (mid2 unit-dir width id)
+(defun wt:op-norm (r)
+  (list (wt:pt2 (car r)) (wt:unit (wt:pt2 (cadr r))) (float (caddr r)) (if (cdddr r) (cadddr r))))
+
+;; registered, currently defined hook functions (bad entries and duplicates skipped)
+(defun wt:hook-fns (lst / f out)
+  (while (and (= (type lst) 'LIST) lst)
+    (setq f (car lst) lst (cdr lst))
+    (if (and (= (type f) 'SYM) (not (member f out))
+             (member (type (eval f)) '(SUBR USUBR EXRXSUBR)))
+      (setq out (cons f out))))
+  (reverse out))
+
+;; all valid openings; collected once per transaction (cache dropped by events)
+(defun wt:openings (/ res x out)
+  (if (and *wt:pending* *wt:op-cache*)
+    (cdr *wt:op-cache*)
+    (progn
+      (foreach f (wt:hook-fns *wt:opening-fns*)
+        (setq res (apply f nil))
+        (while (and (= (type res) 'LIST) res)
+          (setq x (car res) res (cdr res))
+          (if (wt:op-valid-p x) (setq out (cons (wt:op-norm x) out)))))
+      (setq out (reverse out))
+      (if *wt:pending* (setq *wt:op-cache* (cons t out)))
+      out)))
+
+;; openings within reach of the walls' bounding box
+(defun wt:op-near (walls ops / x0 y0 x1 y1 d out)
+  (foreach w walls
+    (foreach p (list (wt:w-p1 w) (wt:w-p2 w))
+      (setq x0 (if x0 (min x0 (car p)) (car p)) x1 (if x1 (max x1 (car p)) (car p))
+            y0 (if y0 (min y0 (cadr p)) (cadr p)) y1 (if y1 (max y1 (cadr p)) (cadr p)))))
+  (if x0
+    (foreach op ops
+      (setq d (+ *wt:recon-max* (caddr op)))
+      (if (and (<= (- x0 d) (car (car op)) (+ x1 d)) (<= (- y0 d) (cadr (car op)) (+ y1 d)))
+        (setq out (cons op out)))))
+  (reverse out))
+
+;; faces of w as sorted signed offsets from mid along n; station span of w along u
+(defun wt:op-band (w mid n / s b o)
+  (setq s (wt:dot (wt:perp (wt:w-u w)) n) b (wt:dot (wt:v- (wt:w-p1 w) mid) n) o (wt:w-offs w))
+  (list (min (+ b (* s (car o))) (+ b (* s (cadr o)))) (max (+ b (* s (car o))) (+ b (* s (cadr o))))))
+(defun wt:op-span (w mid u / a b)
+  (setq a (wt:dot (wt:v- (wt:w-p1 w) mid) u) b (wt:dot (wt:v- (wt:w-p2 w) mid) u))
+  (list (min a b) (max a b)))
+
+;; candidate walls for op: `walls` plus drawing masters within reach (*wt:op-net*,
+;; bound by the caller), minus *wt:op-skip* (masters being removed)
+(defun wt:op-pool (op walls / w out)
+  (setq out walls)
+  (foreach m (car *wt:op-net*)
+    (if (and (not (assoc (car m) out)) (not (member (car m) *wt:op-skip*))
+             (not (wt:peq (cadr m) (caddr m)))
+             (<= (wt:seg-dist (car op) (cadr m) (caddr m)) (+ (/ (caddr op) 2.0) *wt:recon-max*))
+             (setq w (wt:wall-from-master m (cadr *wt:op-net*))))
+      (setq out (cons w out))))
+  out)
+
+;; -> ("OK" void-rect walls) | ("AMBIG" nil walls) | ("NONE")
+(defun wt:op-assoc (op pool / mid u n hw cands b s ref lo hi more c half sn fp x r)
+  (setq mid (car op) u (cadr op) n (wt:perp u) hw (/ (caddr op) 2.0))
+  (foreach w pool
+    (if (and (wt:par u (wt:w-u w))
+             (setq b (wt:op-band w mid n))
+             (< (car b) (- *wt:op-tol*)) (> (cadr b) *wt:op-tol*)
+             (setq s (wt:op-span w mid u))
+             (<= (car s) *wt:tol*) (>= (cadr s) (- *wt:tol*)))
+      (setq cands (cons w cands) ref (if ref ref b))))
+  (foreach w cands (if (not (equal (wt:op-band w mid n) ref *wt:op-tol*)) (setq r t)))
+  (cond
+    ((not cands) (list "NONE"))
+    (r (list "AMBIG" nil cands))                          ; several different walls
+    (t
+     ;; extent of the logical wall: chained collinear spans with the same band
+     (setq lo 0.0 hi 0.0 more t)
+     (foreach w cands (setq s (wt:op-span w mid u) lo (min lo (car s)) hi (max hi (cadr s))))
+     (while more
+       (setq more nil)
+       (foreach w pool
+         (if (and (wt:par u (wt:w-u w))
+                  (equal (wt:op-band w mid n) ref *wt:op-tol*)
+                  (setq s (wt:op-span w mid u))
+                  (<= (car s) (+ hi *wt:tol*)) (>= (cadr s) (- lo *wt:tol*))
+                  (or (< (car s) (- lo *wt:tol*)) (> (cadr s) (+ hi *wt:tol*))))
+           (setq lo (min lo (car s)) hi (max hi (cadr s)) more t))))
+     (setq c (/ (+ (car ref) (cadr ref)) 2.0) half (/ (- (cadr ref) (car ref)) 2.0))
+     ;; a non-parallel wall whose centerline reaches this band and whose body
+     ;; overlaps the opening interval (L/T/X at the opening)
+     (foreach w pool
+       (if (and (not r) (not (wt:par u (wt:w-u w)))
+                (setq x (wt:xline (wt:v+ mid (wt:v* n c)) u (wt:w-p1 w) (wt:w-u w))))
+         (progn
+           (setq sn (abs (wt:cross u (wt:w-u w)))
+                 fp (/ (+ (/ (wt:w-thk w) 2.0) (* half (abs (wt:dot u (wt:w-u w))))) sn))
+           (if (and (<= (wt:seg-dist x (wt:w-p1 w) (wt:w-p2 w)) (+ (/ half sn) *wt:tol*))
+                    (< (abs (wt:dot (wt:v- x mid) u)) (- (+ hw fp) *wt:op-tol*)))
+             (setq r t)))))
+     (cond
+       ((or r (> lo (- (+ hw *wt:op-tol*))) (< hi (+ hw *wt:op-tol*))) (list "AMBIG" nil cands))
+       (t
+        (list "OK"
+              (mapcar '(lambda (a o) (wt:v+ mid (wt:v+ (wt:v* u a) (wt:v* n o))))
+                      (list (- hw) hw hw (- hw))
+                      (list (- (car ref) 1.0) (- (car ref) 1.0) (+ (cadr ref) 1.0) (+ (cadr ref) 1.0)))
+              cands))))))
+
+(defun wt:op-note (op) (if (not (member op *wt:op-amb*)) (setq *wt:op-amb* (cons op *wt:op-amb*))))
+(defun wt:op-suspect (op)
+  (if (and (cadddr op) (not (member (cadddr op) *wt:op-sus*))) (setq *wt:op-sus* (cons (cadddr op) *wt:op-sus*))))
+
+;; -> ((void-rect wall-indices op) ...) for the openings of `walls`
+(defun wt:opening-voids (walls / r i idx out)
+  (if walls
+    (foreach op (wt:op-near walls (wt:openings))
+      (setq r (wt:op-assoc op (wt:op-pool op walls)))
+      (cond
+        ((= (car r) "OK")
+         (setq i 0 idx nil)
+         (foreach w walls (if (member w (caddr r)) (setq idx (cons i idx))) (setq i (1+ i)))
+         (setq out (cons (list (cadr r) idx op) out)))
+        ((and (= (car r) "AMBIG") (wt:any-member walls (caddr r))) (wt:op-note op)))))
+  out)
+
+;; void rects of openings (e.g. no longer registered) held by one of `walls`: their old jambs get erased
+(defun wt:op-rects (ops walls / r out)
+  (foreach op ops
+    (if (and (= (car (setq r (wt:op-assoc op (wt:op-pool op walls)))) "OK") (wt:any-member walls (caddr r)))
+      (setq out (cons (cadr r) out))))
+  out)
+
+;; A-WALL line f lies on an edge of one of the void rects (a jamb)
+(defun wt:void-cap-p (f rects / r)
+  (foreach v rects
+    (foreach e (wt:poly-edges v)
+      (if (and (wt:on-seg (cadr f) (car e) (cadr e)) (wt:on-seg (caddr f) (car e) (cadr e))) (setq r t))))
+  r)
+
+;; segment p-q is a jamb of a registered opening (perpendicular at +/- width/2, centred)
+(defun wt:op-jamb-p (p q / r sa sb)
+  (foreach op (wt:openings)
+    (setq sa (wt:dot (wt:v- p (car op)) (cadr op)) sb (wt:dot (wt:v- q (car op)) (cadr op)))
+    (if (and (< (abs (- sa sb)) *wt:op-tol*)
+             (< (abs (- (abs sa) (/ (caddr op) 2.0))) *wt:op-tol*)
+             (< (abs (+ (wt:dot (wt:v- p (car op)) (wt:perp (cadr op))) (wt:dot (wt:v- q (car op)) (wt:perp (cadr op))))) *wt:op-tol*))
+      (setq r t)))
+  r)
+
+;; ids of openings lying wholly on wall w (WWD moves them with it)
+(defun wt:op-ids-on (w / *wt:op-net* r s hw out)
+  (setq *wt:op-net* (wt:net-scan))
+  (foreach op (wt:op-near (list w) (wt:openings))
+    (setq hw (/ (caddr op) 2.0))
+    (if (and (cadddr op)
+             (= (car (setq r (wt:op-assoc op (wt:op-pool op (list w))))) "OK")
+             (member w (caddr r))
+             (setq s (wt:op-span w (car op) (cadr op)))
+             (<= (car s) (- *wt:tol* hw)) (>= (cadr s) (- hw *wt:tol*)))
+      (setq out (cons (cadddr op) out))))
+  out)
+
+;; hook event: call every registered fn, absorb its changes into the transaction
+(defun wt:op-event (fns args)
+  (foreach f (wt:hook-fns fns) (wt:pend-absorb (apply f args)))
+  (setq *wt:op-cache* nil))
+
+;; --- Public API for opening providers (safe to call only while WallTool is loaded) ---
+
+;; (mid dir width) -> "OK" (a WallTool wall owns it) | "AMBIG" | "NONE"
+(defun wt:api-opening-status (rec / *wt:op-net* op)
+  (wt:init)
+  (if (wt:op-valid-p rec)
+    (progn
+      (setq *wt:op-net* (wt:net-scan) op (wt:op-norm rec))
+      (car (wt:op-assoc op (wt:op-pool op nil))))
+    "NONE"))
+
+;; Openings (mid dir width) were added, removed or resized: regenerate the WallTool
+;; walls holding them from the current registrations (old jambs erased). Runs as
+;; its own WallTool transaction inside the caller's undo group. T if a wall changed.
+(defun wt:api-openings-changed (recs / *wt:op-net* *wt:op-extra* ws op r)
+  (wt:init)
+  (setq *wt:op-net* (wt:net-scan))
+  (foreach x recs
+    (if (and (wt:op-valid-p x)
+             (setq op (wt:op-norm x))
+             (= (car (setq r (wt:op-assoc op (wt:op-pool op nil)))) "OK"))
+      (progn
+        (setq *wt:op-extra* (cons op *wt:op-extra*))
+        (foreach w (caddr r) (if (not (assoc (car w) ws)) (setq ws (cons w ws)))))))
+  (if ws
+    (progn (wt:pend-begin) (wt:rebuild (reverse ws) nil) (wt:pend-end) t)))
+
+(defun wt:topo-linework (walls regen / res strips hubs polys voids vs cutters cand i runs out)
   (setq res (wt:topo-solve walls) strips (car res) hubs (cadr res)
         polys (append (mapcar 'wt:strip-poly strips) (mapcar 'car hubs))
-        cutters (apply 'append (mapcar 'wt:poly-edges polys))
+        vs (wt:opening-voids walls) voids (mapcar 'car vs)
+        cutters (apply 'append (mapcar 'wt:poly-edges (append polys voids)))
         i 0)
+  (foreach v vs
+    (if (wt:any-member (cadr v) regen) (setq cand (append cand (wt:poly-edges (car v))))))
   (foreach s strips
     (if (member i regen) (setq cand (append cand (wt:poly-edges (wt:strip-poly s)))))
     (setq i (1+ i)))
   (foreach h hubs
     (if (wt:any-member (cadr h) regen) (setq cand (append cand (wt:poly-edges (car h))))))
   (foreach e cand
-    (setq runs (append runs (wt:edge-visible (car e) (cadr e) polys cutters))))
+    (setq runs (append runs (wt:edge-visible (car e) (cadr e) polys voids cutters))))
   ;; drop runs contained in a longer one (coincident edges of adjacent strips)
   (foreach r (wt:sort runs '(lambda (a b) (> (wt:dist (car a) (cadr a)) (wt:dist (car b) (cadr b)))))
     (if (not (wt:seg-covered r out)) (setq out (cons r out))))
@@ -605,7 +835,7 @@
 
 ;; Thickness of an unregistered master from parallel A-WALL lines overlapping its
 ;; span. Masters are wall centerlines, so the faces must sit symmetrically at
-;; +/- thickness/2. nil otherwise (plain axis, off-centre legacy master -> see WR).
+;; +/- thickness/2. nil otherwise (plain axis, off-centre legacy master -> see WWR).
 (defun wt:recon (m faces / p1 p2 u l d sa sb pmin nmax zero)
   (setq p1 (cadr m) p2 (caddr m) u (wt:unit (wt:v- p2 p1)) l (wt:dist p1 p2))
   (foreach f faces
@@ -742,7 +972,41 @@
 ;;; ===================================================================
 
 ;; *wt:pending* = (created erased modified-old-data); reverted by wt:seg-undo
-(defun wt:pend-begin () (setq *wt:pending* (list nil nil nil)))
+(defun wt:pend-begin ()
+  (setq *wt:pending* (list nil nil nil) *wt:op-cache* nil *wt:op-sus* nil *wt:op-amb* nil))
+;; Close the transaction: openings whose wall was removed and not replaced are
+;; deleted by their providers (recorded), skipped openings reported. -> record
+(defun wt:pend-end (/ *wt:op-net* ops op gone rec)
+  (if *wt:op-sus*
+    (progn
+      (setq *wt:op-net* (wt:net-scan) ops (wt:openings))
+      (foreach id *wt:op-sus*
+        (setq op nil)
+        (foreach o ops (if (equal (cadddr o) id) (setq op o)))
+        (if (and op (= (car (wt:op-assoc op (wt:op-pool op nil))) "NONE")) (setq gone (cons id gone))))
+      (if gone
+        (progn
+          (wt:op-event *wt:opening-removed-fns* (list gone))
+          (princ (strcat "\n" (itoa (length gone)) " door/window opening(s) removed with their wall."))))))
+  (if *wt:op-amb*
+    (princ (strcat "\n" (itoa (length *wt:op-amb*))
+                   " door/window opening(s) overlap a wall junction, leave their wall or match several walls: hole not kept.")))
+  (setq rec *wt:pending* *wt:pending* nil *wt:op-sus* nil *wt:op-amb* nil *wt:op-cache* nil)
+  rec)
+;; provider changes (created erased modified-old-data) -> current transaction
+(defun wt:pend-absorb (rec / k l x)
+  (if *wt:pending*
+    (progn
+      (setq k 0)
+      (while (and (< k 3) (= (type rec) 'LIST) rec)
+        (setq l (car rec) rec (cdr rec))
+        (while (and (= (type l) 'LIST) l)
+          (setq x (car l) l (cdr l))
+          (if (if (= k 2)
+                (and (= (type x) 'LIST) (= (type (car x)) 'LIST) (= (type (cdr (assoc -1 x))) 'ENAME))
+                (= (type x) 'ENAME))
+            (wt:pend-push k x)))
+        (setq k (1+ k))))))
 (defun wt:pend-push (k x) (setq *wt:pending* (wt:setnth *wt:pending* k (cons x (nth k *wt:pending*)))))
 (defun wt:pend-make (en) (if en (wt:pend-push 0 en)) en)
 (defun wt:pend-erase (en) (entdel en) (wt:pend-push 1 en))
@@ -843,9 +1107,11 @@
 ;; regen = new + existing walls touching new/removed, plus any wall sharing a
 ;;         (merged) line with them (linework erased and redrawn)
 ;; ctx   = existing walls touching regen walls (topology only)
-(defun wt:rebuild (new removed / lyr net faces changed rest regen ctx w walls idx keep grow)
+(defun wt:rebuild (new removed / lyr net faces changed rest regen ctx w walls idx keep grow vr n0
+                                  *wt:op-net* *wt:op-skip*)
   (if new (setq new (wt:normalize-masters new)))
-  (setq lyr (wt:cfg "WALL_LAYER") net (wt:net-scan) faces (cadr net) changed (append new removed))
+  (setq lyr (wt:cfg "WALL_LAYER") net (wt:net-scan) faces (cadr net) changed (append new removed)
+        *wt:op-net* net)
   (foreach m (car net)
     (cond ((assoc (car m) changed))
           ((and (wt:touch-any m changed) (setq w (wt:wall-from-master m faces)))
@@ -867,8 +1133,16 @@
   (setq walls (append new regen ctx))
   (repeat (+ (length new) (length regen)) (setq idx (cons (length idx) idx)))
   (wt:dbg (list "rebuild new" (length new) "removed" (length removed) "regen" (length regen) "ctx" (length ctx)))
+  ;; registered openings: their old jambs are erased and redrawn; an opening on a removed
+  ;; wall is a suspect, deleted at wt:pend-end unless a wall still holds it then
+  (setq n0 (+ (length new) (length regen)))
+  (foreach v (wt:opening-voids (append new regen removed))
+    (if (cadr v) (setq vr (cons (car v) vr)))   ; only openings of walls redrawn here
+    (foreach k (cadr v) (if (>= k n0) (wt:op-suspect (caddr v)))))
+  (setq vr (append vr (wt:op-rects *wt:op-extra* (append new regen removed)))
+        *wt:op-skip* (mapcar 'car removed))
   (foreach f faces
-    (if (or (wt:any-owned f new) (wt:any-owned f regen) (wt:any-owned f removed))
+    (if (or (wt:any-owned f new) (wt:any-owned f regen) (wt:any-owned f removed) (wt:void-cap-p f vr))
       (wt:pend-erase (car f))
       (setq keep (cons (list (cadr f) (caddr f)) keep))))
   (foreach w removed (if (entget (car w)) (wt:pend-erase (car w))))
@@ -877,13 +1151,13 @@
       (wt:pend-make (wt:mk-line (car s) (cadr s) lyr))))
   new)
 
-;; --- Local axis healing (shared by WW and WWE; WR stays the user-requested audit) ---
+;; --- Local axis healing (shared by WW and WWE; WWR stays the user-requested audit) ---
 ;; Only the given node points are inspected. At each point a master node is removed
 ;; only when it no longer represents topology:
 ;;   - zero-length masters there are erased
 ;;   - an exact duplicate of another master there is erased (one copy kept)
 ;;   - exactly two recognised collinear spans of one thickness end there and nothing
-;;     else touches the point -> joined into one master (WR's wt:wr-join rule)
+;;     else touches the point -> joined into one master (WWR's wt:wr-join rule)
 ;; A T, X, L, a width step or any other wall at the point keeps the split. Records
 ;; into the caller's transaction. Returns (gone-ename . kept-ename) or nil.
 (defun wt:axis-heal-node (p / net ms seen w2 seg a b d fld)
@@ -1050,7 +1324,7 @@
                 (if (or (wt:peq en (wt:w-p1 w)) (wt:peq en (wt:w-p2 w)))
                   (setq *wt:chain* (cons (list (if (= side 0) (car sg) (cadr sg)) (car w) en) *wt:chain*)))))
             (setq i (1+ i)))))
-      (setq rec *wt:pending* *wt:pending* nil)
+      (setq rec (wt:pend-end))
       rec)))
 
 ;;; ===================================================================
@@ -1255,7 +1529,7 @@
   (setq new (reverse new) ex (length new))
   (if new (setq new (wt:rebuild (append new moved) nil)))
   (foreach w new (wt:reg-add (car w) (wt:w-thk w) "CENTER"))
-  (setq *wt:pending* nil)
+  (wt:pend-end)
   (if (> skipped 0)
     (princ (strcat "\n" (itoa skipped) " line(s) skipped (zero length, wall face, duplicate, or already a wall).")))
   (princ (strcat "\n" (itoa ex) " axis line(s) converted."))
@@ -1357,7 +1631,7 @@
     (progn
       (wt:pend-begin)
       (wt:rebuild nil walls)
-      (setq *wt:pending* nil)
+      (wt:pend-end)
       (princ (strcat "\n" (itoa (length walls)) " wall(s) erased."))))
   (if (> amb 0)
     (princ (strcat "\n" (itoa amb) " ambiguous wall line(s) skipped. Select closer to the wall segment to erase.")))
@@ -1610,7 +1884,7 @@
         (setq n (1+ n)))
       ;; stale A-WALL pieces beside the walls being rebuilt that no recognised wall
       ;; claims any more (e.g. faces/caps left where a moved master used to be)
-      (setq net (wt:net-scan) lw (wt:legacy-walls net))   ; legacy walls are WR's job
+      (setq net (wt:net-scan) lw (wt:legacy-walls net))   ; legacy walls are WWR's job
       (foreach f (cadr net)
         (if (and (not (wt:any-owned f walls))
                  (not (wt:face-owners f net))
@@ -1618,7 +1892,7 @@
                  (wt:tw-near-master-p f walls))
           (wt:pend-erase (car f))))
       (wt:rebuild (reverse keepws) stubws)
-      (setq rec *wt:pending* *wt:pending* nil)
+      (setq rec (wt:pend-end))
       (setq n (+ (length nodes) (length stubs)))
       (princ (strcat "\nTW: "
                      (if (> n 0) (strcat (itoa n) " wall junction(s) repaired.") "Wall geometry rebuilt.")
@@ -1638,7 +1912,7 @@
 ;; collection filter: A-WALL lines owned by an AKD wall stay with the AKD path
 (defun wt:tw-akd-line-p (e d a b)
   (and (= (strcase (cdr (assoc 8 d))) (strcase (wt:cfg "WALL_LAYER")))
-       (wt:face-owners (list e a b) *wt:tw-net*)))
+       (or (wt:face-owners (list e a b) *wt:tw-net*) (wt:op-jamb-p a b))))
 
 ;; mutual-pair components of *wt:tx-segs* -> generic wall records
 (defun wt:tw-gen-walls (/ seen comp queue x recs ref u o2 lo hi s1 s2 ok iv off rec base)
@@ -1829,9 +2103,9 @@
   (wt:end))
 
 ;;; ===================================================================
-;;; 19. WR -- wall repair: audit / repair centerline masters in a field
+;;; 19. WWR -- wall repair: audit / repair centerline masters in a field
 ;;; ===================================================================
-;;; WR repairs what the walls ARE (centerline, thickness, missing masters).
+;;; WWR repairs what the walls ARE (centerline, thickness, missing masters).
 ;;; TW repairs how nearby walls CONNECT. Evidence, strongest first:
 ;;;   1 recognised wall master   2 A-WALL faces   3 junctions with known walls
 ;;;   4 reconstruction (only when both ends are proven)
@@ -1922,6 +2196,38 @@
           (setq cands (cons (list "OK" (list e0 e1) (abs d)) cands))))))
   (cond ((cdr cands) (list "AMBIG")) (cands (car cands))))
 
+;; Faces for inference: jambs of registered openings dropped, and collinear face
+;; pieces interrupted exactly by an opening joined across it (first piece's ename),
+;; so an intentional hole is neither a wall end, a band break nor a contradiction.
+(defun wt:wr-open-faces (faces / mid u n hw keep ls rs sa sb da db lo hi hit rest)
+  (foreach op (wt:openings)
+    (setq mid (car op) u (cadr op) n (wt:perp u) hw (/ (caddr op) 2.0) keep nil ls nil rs nil)
+    (foreach f faces
+      (setq sa (wt:dot (wt:v- (cadr f) mid) u) sb (wt:dot (wt:v- (caddr f) mid) u)
+            da (wt:dot (wt:v- (cadr f) mid) n) db (wt:dot (wt:v- (caddr f) mid) n)
+            lo (min sa sb) hi (max sa sb))
+      (cond
+        ((and (< (abs (- sa sb)) *wt:op-tol*) (< (abs (- (abs sa) hw)) *wt:op-tol*)
+              (< (abs (+ da db)) *wt:op-tol*)))                          ; jamb: dropped
+        ((or (> (abs (- da db)) *wt:op-tol*) (> (abs da) *wt:recon-max*)) (setq keep (cons f keep)))
+        ((and (< (abs (+ hi hw)) *wt:op-tol*) (< lo (- (+ hw *wt:op-tol*)))) (setq ls (cons (list f lo da) ls)))
+        ((and (< (abs (- lo hw)) *wt:op-tol*) (> hi (+ hw *wt:op-tol*))) (setq rs (cons (list f hi da) rs)))
+        (t (setq keep (cons f keep)))))
+    (foreach a ls
+      (setq hit nil rest nil)
+      (foreach b rs
+        (if (and (not hit) (< (abs (- (caddr a) (caddr b))) *wt:op-tol*)) (setq hit b) (setq rest (cons b rest))))
+      (setq rs rest)
+      (setq keep (cons (if hit
+                         (list (car (car a))
+                               (wt:v+ mid (wt:v+ (wt:v* u (cadr a)) (wt:v* n (caddr a))))
+                               (wt:v+ mid (wt:v+ (wt:v* u (cadr hit)) (wt:v* n (caddr a)))))
+                         (car a))
+                       keep)))
+    (foreach b rs (setq keep (cons (car b) keep)))
+    (setq faces (reverse keep)))
+  faces)
+
 ;; a wall line close to master w that w does not own: the master no longer matches
 ;; its faces (e.g. the axis was stretched at one end only)
 (defun wt:wr-contradicted-p (w faces / r)
@@ -1988,14 +2294,14 @@
 
 ;; Audit and repair wall masters in field. Returns the transaction record (or nil).
 (defun wt:wr-repair (field / net recs band reg adj amb ambs created walls i r w m p xs x nw k d
-                            pass more c seg en rec checked msg joined pair keep a b known ff)
-  (setq net (wt:net-scan) adj 0 created 0 joined 0)
+                            pass more c seg en rec checked msg joined pair keep a b known ff of)
+  (setq net (wt:net-scan) adj 0 created 0 joined 0 of (wt:wr-open-faces (cadr net)))
   (foreach m (car net) (if (setq w (wt:wall-from-master m (cadr net))) (setq known (cons w known))))
   ;; 1. audit existing masters: faces decide the centerline and thickness
   (foreach m (car net)
     (if (wt:tw-seg-in-field (cadr m) (caddr m) field)
       (progn
-        (setq ff (wt:wr-free-faces (cadr net) known (car m) (wt:unit (wt:v- (caddr m) (cadr m))))
+        (setq ff (wt:wr-free-faces of known (car m) (wt:unit (wt:v- (caddr m) (cadr m))))
               band (wt:wr-band (wt:wr-offsets (cadr m) (caddr m) ff))
               reg (assoc (car m) *wt:reg*))
         (cond
@@ -2044,14 +2350,14 @@
   ;;    masters rebuilt by earlier ones as junction evidence)
   (setq pass 0 more t)
   (while (and more (< pass 3))
-    (setq more nil pass (1+ pass) net (wt:net-scan))
-    (foreach f (cadr net)
+    (setq more nil pass (1+ pass) net (wt:net-scan) of (wt:wr-open-faces (cadr net)))
+    (foreach f of
       (if (and (wt:tw-seg-in-field (cadr f) (caddr f) field)
                (> (wt:dist (cadr f) (caddr f)) *wt:tol*)
                (not (wt:any-owned f walls))
                (not (wt:face-owners f net)))
         (progn
-          (setq c (wt:wr-candidate f (cadr net) walls))
+          (setq c (wt:wr-candidate f of walls))
           (cond
             ((not c))
             ((= (car c) "AMBIG") (if (not (member (car f) ambs)) (setq ambs (cons (car f) ambs))))
@@ -2098,7 +2404,7 @@
              (wt:tw-near-master-p f walls))
       (wt:pend-erase (car f))))
   (if walls (wt:rebuild (reverse walls) nil))
-  (setq rec *wt:pending* *wt:pending* nil
+  (setq rec (wt:pend-end)
         checked (length walls) amb (length ambs))
   (setq msg (strcat "\nWR: " (itoa checked) " wall(s) checked."))
   (if (and (= adj 0) (= created 0) (= joined 0))
@@ -2110,7 +2416,7 @@
   (princ msg)
   rec)
 
-(defun c:WR (/ *error* c1 c2)
+(defun c:WWR (/ *error* c1 c2)
   (setq *error* wt:error)
   (wt:begin)
   (wt:layer "AXIS")
@@ -2124,8 +2430,8 @@
 ;; Off-centre legacy AKD walls: X-AXIS masters whose two faces form a band that
 ;; does not centre on the master (older eccentric drawings, or a master moved by
 ;; hand) that are not recognised as centred walls. Returned as the centred
-;; records WR would create. Such walls are left to
-;; WR: TX/TW/WWD/WWE never treat their faces as ordinary geometry.
+;; records WWR would create. Such walls are left to
+;; WWR: TX/TW/WWD/WWE never treat their faces as ordinary geometry.
 (defun wt:legacy-wall (m faces / band d)
   (setq band (wt:wr-band (wt:wr-offsets (cadr m) (caddr m) faces)))
   (if (and (= (type band) 'LIST) (> (abs (car band)) *wt:tol*))
@@ -2197,7 +2503,7 @@
 ;; (see wt:legacy-walls). Ownership is decided geometrically, not by layer.
 (defun wt:tx-protected-p (e p q ctx / f)
   (setq f (list e p q))
-  (or (wt:face-owners f (car ctx)) (wt:any-owned f (cadr ctx))))
+  (or (wt:face-owners f (car ctx)) (wt:any-owned f (cadr ctx)) (wt:op-jamb-p p q)))
 
 (defun wt:tx-snapshot (ens / d p q out nax nother ctx)
   (setq nax 0 nother 0 *wt:tx-nprot* 0
@@ -3334,7 +3640,7 @@
     (t
      (setq *wt:tw-net* (wt:net-scan))
      (if (wt:any-owned (list en (wt:pt2 (cdr (assoc 10 d))) (wt:pt2 (cdr (assoc 11 d)))) (wt:legacy-walls *wt:tw-net*))
-       (setq r "\nLegacy wall axis detected. Run WR first."))
+       (setq r "\nLegacy wall axis detected. Run WWR first."))
      (if (and (not r) (= lyr (strcase (wt:cfg "WALL_LAYER")))) (setq r (wt:wwd-akd en q *wt:tw-net*)))
      (if (not r) (setq r (wt:wwd-generic en q)))
      (setq *wt:tw-net* nil)
@@ -3384,7 +3690,7 @@
   n)
 
 ;; Validated records + distance -> transaction record, or a message (no change)
-(defun wt:wwd-execute (m r d / v w p1 p2 net en new rec f0 f1 lines n0 n1 dl)
+(defun wt:wwd-execute (m r d / v w p1 p2 net en new rec f0 f1 lines n0 n1 dl ids)
   (cond
     ((>= (abs (wt:cross (cadddr m) (cadddr r))) *wt:tx-tol-par*)
      (wt:dbg (list "WWD REJECT reason SELECTED WALLS NOT PARALLEL"))
@@ -3403,13 +3709,15 @@
      (if (and (setq en (wt:master-at p1 p2 (car net))) (wt:wall-from-master en (cadr net)))
        "\nA wall already exists at that position."
        (progn
+         (setq ids (wt:op-ids-on w))                      ; openings travel with the wall
          (wt:pend-begin)
          (wt:rebuild nil (list w))                       ; old location: EW path
+         (if ids (wt:op-event *wt:wall-moved-fns* (list ids (wt:3d v))))
          (setq en (wt:pend-make (wt:mk-line p1 p2 (wt:cfg "AXIS_LAYER"))))
          (setq new (wt:rebuild (list (list en p1 p2 (wt:w-thk w) "CENTER")) nil))   ; new location: WW path
          (foreach nw new (wt:reg-add (car nw) (wt:w-thk nw) "CENTER"))
-         (wt:dbg (list "WWD AKD master moved" (car w) "->" en "spans" (length new)))
-         (setq rec *wt:pending* *wt:pending* nil)
+         (wt:dbg (list "WWD AKD master moved" (car w) "->" en "spans" (length new) "openings" (length ids)))
+         (setq rec (wt:pend-end))
          rec)))
     (t
      (setq f0 (wt:wwd-field (nth 6 m) (wt:cfg "TX_CONNECT_DISTANCE") '(0.0 0.0))
@@ -3579,7 +3887,7 @@
     (t
      (setq *wt:tw-net* (wt:net-scan))
      (if (wt:any-owned (list en (wt:pt2 (cdr (assoc 10 d))) (wt:pt2 (cdr (assoc 11 d)))) (wt:legacy-walls *wt:tw-net*))
-       (setq r "\nLegacy wall axis detected. Run WR first."))
+       (setq r "\nLegacy wall axis detected. Run WWR first."))
      (if (and (not r) (= lyr (strcase (wt:cfg "WALL_LAYER")))) (setq r (wt:wwe-akd en q *wt:tw-net*)))
      (if (not r) (setq r (wt:wwe-generic en q)))
      (setq *wt:tw-net* nil)
@@ -4006,7 +4314,7 @@
       (if new (foreach nn (wt:rebuild (reverse new) nil) (wt:reg-add (car nn) (wt:w-thk nn) "CENTER")))
       ;; command-owned cleanup: old nodes the removed spans left, the new spans' nodes
       (wt:axis-heal-local (append (wt:heal-pts rems) (wt:heal-pts new)))
-      (setq rec *wt:pending* *wt:pending* nil)
+      (setq rec (wt:pend-end))
       (list rec "\nWall connected." (wt:wwe-g p "MOVE")))))
 
 ;; -> (transaction-record message distance) or a message (no change)
@@ -4094,5 +4402,5 @@
 
 (defun c:WWO () (c:WWF))   ; old name, undocumented alias
 
-(princ "\nAKD WallTool loaded: AX, ZXW, WW, XW, EW, WWF, WWD, WWE, TW, TX, WR.")
+(princ "\nAKD WallTool loaded: AX, ZXW, WW, XW, EW, WWF, WWD, WWE, TW, TX, WWR.")
 (princ)

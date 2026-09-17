@@ -7,6 +7,13 @@ Single file: `AKDDoorWin.lsp` in `/Users/razzan/Documents/Claude Projects/LISPs/
 
 Companion tool: `WW.lsp` (root of repo) draws double-line walls. Compatible with all AKD hole-cutting commands.
 
+## AKD WallTool integration (2026-09-17)
+- Provider/hook section near the end of `AKDDoorWin.lsp` (`akd:wt-*`). WallTool API: `wt:api-opening-status`, `wt:api-openings-changed`.
+- WallTool walls: `hole:do` (AD/AW/ACW), `ew:do-one` (EDW/VX), `CW`, `RH` delegate linework to WallTool. Ordinary walls keep the legacy code.
+- `EW` renamed `EDW`, `WR` renamed `WRN` (WallTool owns EW / WWR).
+- Integration tests: `AKD WallTool/test/integration_tests.py` (loads this file).
+- Corner windows unsupported: XData lacks arm geometry (see README).
+
 ## Current commands (see README.md for user-facing table)
 
 Placement (loops, accepts typed width, cuts hole first):

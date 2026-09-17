@@ -239,7 +239,7 @@ segs, got = recon_case([wall(O, (3000, 0), 200), wall((3000, 0), (3000, 2500), 1
 chk('recon: centered masters -> thickness recovered as CENTER', [g[0] for g in got] == [(200, 'CENTER'), (150, 'CENTER'), (100, 'CENTER')])
 segs = solve([wall(O, (3000, 0), 200, 'LEFT')])
 faces = '(list ' + ' '.join(f'(list nil {P(*a)} {P(*b)})' for a, b in segs) + ')'
-chk('recon: legacy off-centre master (on a face) is NOT recognised (WR migrates it)', A.ev(f'(wt:recon (list 0 {P(0,0)} {P(3000,0)}) {faces})') is None)
+chk('recon: legacy off-centre master (on a face) is NOT recognised (WWR migrates it)', A.ev(f'(wt:recon (list 0 {P(0,0)} {P(3000,0)}) {faces})') is None)
 chk('recon: plain AX line (no faces) is not a wall', A.ev(f'(wt:recon (list 0 {P(0,5000)} {P(3000,5000)}) (list))') is None)
 _, got = recon_case([wall(O, (3000, 0))])
 chk('owned lines: free wall claims all 4 lines', got[0][1] == 4)
@@ -890,7 +890,7 @@ A.ev('(wt:seg-undo *t-keep*)')
 chk('XW LEFT Undo restores the original source LINEs exactly (layer 0, drawn geometry, no walls)',
     converted and not masters_now() and not walls_now() and all(e not in A.DELETED and A.DB[e] == src[e] for e in ids))
 
-# =========================== WR (Phase 2) ===========================
+# =========================== WWR (Phase 2) ===========================
 def wr(fld):
     A.G[A.Sym('*T-F*')] = [list(p) for p in fld]
     return A.ev('(wt:wr-repair (mapcar (quote (lambda (p) (list (float (car p)) (float (cadr p))))) *t-f*))')
@@ -909,7 +909,7 @@ def say(fn):
 fresh(200, 'CENTER'); add(((0,0),(4000,0))); phys = geo()[0]
 e = find_line('X-AXIS', (0,0), (4000,0)); set_end(e, 0, (0,60)); set_end(e, 1, (4000,60))
 msg, _ = say(lambda: wr(field(-500,-500,4500,500)))
-chk('WR misaligned master (moved 60): back to exact center, physical wall unchanged, reported',
+chk('WWR misaligned master (moved 60): back to exact center, physical wall unchanged, reported',
     master_set() == [mk((0,0),(4000,0))] and geo()[0] == phys and '1 axis/axes adjusted' in msg)
 
 # missing master: free wall with caps
@@ -917,14 +917,14 @@ fresh(200, 'CENTER'); add(((0,0),(4000,0))); phys = geo()[0]
 A.entdel(find_line('X-AXIS', (0,0), (4000,0))); A.ev('(setq *wt:reg* nil)')
 msg, _ = say(lambda: wr(field(-500,-500,4500,500)))
 r = A.ev(f'(wt:recon (list nil {P(0,0)} {P(4000,0)}) (cadr (wt:net-scan)))')
-chk('WR missing master: centerline and 200 thickness reconstructed, faces unchanged',
+chk('WWR missing master: centerline and 200 thickness reconstructed, faces unchanged',
     master_set() == [mk((0,0),(4000,0))] and r and round(r[3]) == 200 and geo()[0] == phys and '1 missing axis/axes rebuilt' in msg)
 
 # recognised master, faces deleted: master wins, faces regenerated
 fresh(200, 'CENTER'); add(((0,0),(4000,0))); before = geo()
 for e2, a, b in walls_now(): A.entdel(e2)
 wr(field(-500,-500,4500,500))
-chk('WR recognised master with all faces erased: master preserved, A-WALL regenerated', geo() == before)
+chk('WWR recognised master with all faces erased: master preserved, A-WALL regenerated', geo() == before)
 
 # legacy LEFT and RIGHT single walls
 ok = True
@@ -932,13 +932,13 @@ for pos, mid in (('LEFT', 100), ('RIGHT', -100)):
     legacy([wall((0,0),(4000,0),200,pos)]); phys = geo()[0]
     wr(field(-500,-500,4500,500))
     ok = ok and master_set() == [mk((0,mid),(4000,mid))] and geo()[0] == phys and master_offsets_ok()
-chk('WR legacy LEFT/RIGHT wall: master moved to true center, thickness and physical wall preserved', ok)
+chk('WWR legacy LEFT/RIGHT wall: master moved to true center, thickness and physical wall preserved', ok)
 
 # legacy T (eccentric masters) -> centered, normalized, same physical walls
 old = [wall((0,0),(10000,0),200,'LEFT'), wall((5000,0),(5000,4000),150,'RIGHT')]
 legacy(old); phys = geo()[0]
 wr(field(-500,-500,10500,4500))
-chk('WR legacy eccentric T: centered masters, three spans, clean T identical to old physical walls',
+chk('WWR legacy eccentric T: centered masters, three spans, clean T identical to old physical walls',
     geo()[0] == phys and master_offsets_ok() and normalized_ok()
     and master_set() == sorted([mk((0,100),(5075,100)), mk((5075,100),(10000,100)), mk((5075,100),(5075,4000))]))   # RIGHT 150 branch drawn up: body on +x
 
@@ -947,22 +947,22 @@ for label, gone in (('branch', ((5000,0),(5000,4000))), ('left arm', ((0,0),(500
     build([wall((0,0),(10000,0))]); add(((5000,0),(5000,4000))); before = geo()
     A.entdel(find_line('X-AXIS', *gone)); A.ev('(setq *wt:reg* nil)')
     wr(field(-500,-500,10500,4500))
-    chk(f'WR T with missing {label} master: rebuilt from faces + junction evidence, T intact', geo() == before)
+    chk(f'WWR T with missing {label} master: rebuilt from faces + junction evidence, T intact', geo() == before)
 
 # safety: arbitrary parallel A-WALL lines are not walls
 fresh(); mkline((0,0),(3000,0),'A-WALL'); mkline((0,200),(3000,200),'A-WALL'); mkline((500,900),(2500,900),'A-WALL'); before = geo()
 wr(field(-500,-500,3500,1500))
-chk('WR does not invent a wall from arbitrary parallel A-WALL lines (no caps, no junctions)', geo() == before and not masters_now())
+chk('WWR does not invent a wall from arbitrary parallel A-WALL lines (no caps, no junctions)', geo() == before and not masters_now())
 # safety: AX line stays an AX line
 fresh(); ax = mkline((0,0),(5000,0),'X-AXIS'); before = geo()
 wr(field(-500,-500,5500,500))
-chk('WR leaves a plain AX line alone (no wall generated)', geo() == before)
+chk('WWR leaves a plain AX line alone (no wall generated)', geo() == before)
 
 # idempotence on a healthy network
 build([wall((0,0),(10000,0))]); add(((5000,-4000),(5000,4000))); add(((0,0),(0,3000))); healthy = geo()
 m1, _ = say(lambda: wr(field(-500,-4500,10500,4500))); g1 = geo()
 m2, _ = say(lambda: wr(field(-500,-4500,10500,4500)))
-chk('WR idempotent: healthy network unchanged on first and second run, "No axis repairs required."',
+chk('WWR idempotent: healthy network unchanged on first and second run, "No axis repairs required."',
     g1 == healthy and geo() == healthy and 'No axis repairs required' in m1 and 'No axis repairs required' in m2)
 
 # combined field + undo
@@ -983,38 +983,38 @@ rec = wr(field(-500,-6500,10500,4500))
 repaired = master_set() == sorted([mk((0,0),(5000,0)), mk((5000,0),(10000,0)), mk((5000,0),(5000,4000)),
                                     mk((0,-6000),(4000,-6000)), mk((6000,-6000),(10000,-6000))]) and lines_match_masters()
 undo_rec(rec)
-chk('WR combined (misaligned + missing + damaged face + unsplit T): all repaired; Undo restores exact original',
+chk('WWR combined (misaligned + missing + damaged face + unsplit T): all repaired; Undo restores exact original',
     repaired and geo() == base and all(e not in A.DELETED and A.DB[e] == d for e, d in ents.items()))
-# WR joins broken collinear pieces of one wall (no junction at the joint)
+# WWR joins broken collinear pieces of one wall (no junction at the joint)
 fresh(200, 'CENTER'); add(((0,0),(10000,0))); phys = geo()[0]
 A.entdel(find_line('X-AXIS', (0,0), (10000,0)))
 for a, b in (((0,0),(3000,0)), ((3000,0),(6000,0)), ((6000,0),(10000,0))): mkline(a, b, 'X-AXIS')
 A.ev('(setq *wt:reg* nil)')
 msg, rec = say(lambda: wr(field(-500,-500,10500,500)))
-chk('WR joins a wall broken into 3 touching masters into one span, walls unchanged, reported',
+chk('WWR joins a wall broken into 3 touching masters into one span, walls unchanged, reported',
     master_set() == [mk((0,0),(10000,0))] and geo()[0] == phys and '2 broken axis segment(s) joined' in msg)
 fresh(200, 'CENTER'); add(((0,0),(10000,0))); phys = geo()[0]
 A.entdel(find_line('X-AXIS', (0,0), (10000,0))); mkline((0,0),(6000,0),'X-AXIS'); mkline((4000,0),(10000,0),'X-AXIS')
 A.ev('(setq *wt:reg* nil)'); base = geo(); rec = wr(field(-500,-500,10500,500))
 joined_ok = master_set() == [mk((0,0),(10000,0))] and geo()[0] == phys
 undo_rec(rec)
-chk('WR joins overlapping collinear masters; Undo restores both pieces', joined_ok and geo() == base)
+chk('WWR joins overlapping collinear masters; Undo restores both pieces', joined_ok and geo() == base)
 build([wall((0,0),(10000,0))]); add(((5000,0),(5000,4000))); before = geo()
 wr(field(-500,-500,10500,4500))
-chk('WR keeps spans split at a real T junction (no join)', geo() == before)
+chk('WWR keeps spans split at a real T junction (no join)', geo() == before)
 fresh(150, 'CENTER'); add(((0,0),(5000,0))); settings(250, 'CENTER'); add(((5000,0),(10000,0))); before = geo()
 wr(field(-500,-500,10500,500))
-chk('WR does not join collinear pieces of different thickness', geo() == before)
+chk('WWR does not join collinear pieces of different thickness', geo() == before)
 fresh(200, 'CENTER'); add(((0,0),(10000,0)))
 A.entdel(find_line('X-AXIS', (0,0), (10000,0))); mkline((0,0),(5000,0),'X-AXIS'); mkline((5000,0),(10000,0),'X-AXIS')
 A.ev('(setq *wt:reg* nil)'); before = geo()
 wr(field(6000,-500,10500,500))
-chk('WR only joins when the joint is inside the window', geo() == before)
+chk('WWR only joins when the joint is inside the window', geo() == before)
 
 A.POINTQ[:] = [[-500.0, -500.0, 0.0], [4500.0, 500.0, 0.0]]
 fresh(200, 'CENTER'); add(((0,0),(4000,0))); e = find_line('X-AXIS', (0,0), (4000,0)); set_end(e, 0, (0,60)); set_end(e, 1, (4000,60))
-A.ev('(c:WR)')
-chk('WR command: two corners -> repair runs', master_set() == [mk((0,0),(4000,0))])
+A.ev('(c:WWR)')
+chk('WWR command: two corners -> repair runs', master_set() == [mk((0,0),(4000,0))])
 
 # =========================== WW: Alignment / Width changes during one run ===========================
 def ww_run(steps, th=150.0, pos='CENTER', keep_session=False):
@@ -1470,7 +1470,7 @@ legacy_host(); settings(150, 'CENTER'); add(((3000,-2000),(3000,-40))); A.ev('(s
 before = geo(); twrun(field(2000,-1000,4000,1000)); untouched = geo() == before
 wr(field(-500,-500,6500,500))
 twrun(field(2000,-1000,4000,1000))
-chk('Legacy host: TW leaves it alone before WR; after WR (centred) TW connects the branch to the true centreline',
+chk('Legacy host: TW leaves it alone before WWR; after WWR (centred) TW connects the branch to the true centreline',
     untouched and master_offsets_ok() and normalized_ok() and mk((3000,-2000),(3000,100)) in master_set()
     and same_lines(walls_now(), expected([wall((0,0),(6000,0),200,'LEFT'), wall((3000,-2000),(3000,0),150)])))
 
@@ -1645,12 +1645,12 @@ before = geo()
 el = face_at((3000, 200)); er = face_at((3000, 2925))
 rr = wres(el, (3000.0, 200.2))
 r = wwd(el, (3000.0, 200.2), er, (3000.0, 2924.8), 1000.0)
-chk('WWD on a legacy off-centre wall: refused with "Run WR first", drawing unchanged',
+chk('WWD on a legacy off-centre wall: refused with "Run WWR first", drawing unchanged',
     isinstance(rr, str) and 'Legacy wall axis detected' in rr and geo() == before)
 wr(field(-500,-500,6500,500))
 el = face_at((3000, 200)); er = face_at((3000, 2925))
 wwd(el, (3000.0, 200.2), er, (3000.0, 2924.8), 1000.0)
-chk('WWD after WR on the former legacy wall: moved, 1000 clear, master centred',
+chk('WWD after WWR on the former legacy wall: moved, 1000 clear, master centred',
     mk((0,1825),(6000,1825)) in master_set() and master_offsets_ok()
     and same_lines(walls_now(), expected([wall((0,1825),(6000,1825),200), wall((0,3000),(6000,3000),150)])))
 
@@ -1921,13 +1921,13 @@ mkline((0,0),(6000,0),'X-AXIS')
 for a_, b_ in expected([wall((0,0),(6000,0),200,'LEFT')]): mkline(a_, b_, 'A-WALL')
 A.ev('(setq *wt:reg* nil)'); before2 = geo()
 r2 = wwe(face_at((3075, -1200)), (3075.2, -1200.0), face_at((1000, 0)), (1000.0, -0.2))
-chk('WWE with a legacy off-centre wall as the moving wall or the target: refused ("Run WR first"), drawing unchanged',
+chk('WWE with a legacy off-centre wall as the moving wall or the target: refused ("Run WWR first"), drawing unchanged',
     isinstance(r1, str) and 'Legacy wall axis detected' in r1 and same1
     and isinstance(r2, str) and 'Legacy wall axis detected' in r2 and geo() == before2)
 legacy_host(); settings(150, 'CENTER'); add(((8000,-3000),(8000,3000))); A.ev('(setq *wt:reg* nil)')
 wr(field(-500,-500,6500,500))
 r = wwe(face_at((5500, 200)), (5500.0, 200.2), face_at((7925, 1000)), (7924.8, 1000.0))
-chk('WWE after WR on the former legacy wall: extended to the target centreline, master centred, T split',
+chk('WWE after WWR on the former legacy wall: extended to the target centreline, master centred, T split',
     okx(r) and mk((0,100),(8000,100)) in master_set() and master_offsets_ok() and normalized_ok()
     and same_lines(walls_now(), expected([wall((0,100),(8000,100),200), wall((8000,-3000),(8000,3000),150)])))
 
@@ -2184,22 +2184,22 @@ r = rec_of_face((2000,100)); damaged = not same_lines(walls_now(), expected([W25
 chk('STRETCH 33: faces stretched, axis not -> the wall is still the axis (4000), not a new 5000 wall; mismatch visible',
     r and mk(r[1], r[2]) == mk((0,0),(4000,0)) and damaged)
 wr(field(-500,-500,5500,500))
-chk('STRETCH 35: WR restores the faces from the axis', master_set() == [mk((0,0),(4000,0))] and same_lines(walls_now(), expected([W25])))
+chk('STRETCH 35: WWR restores the faces from the axis', master_set() == [mk((0,0),(4000,0))] and same_lines(walls_now(), expected([W25])))
 fresh(); mk_walls(W25); stretch(3900,-200,4200,200,1000,0, layers=('X-AXIS',))
 r = rec_of_face((2000,100))
 chk('STRETCH 34: axis stretched, faces not -> axis wins (5000), faces not treated as a separate wall',
     r and mk(r[1], r[2]) == mk((0,0),(5000,0)) and not same_lines(walls_now(), expected([C((0,0),(5000,0),200.0)])))
 wr(field(-500,-500,5500,500))
-chk('STRETCH 35b: WR rebuilds the faces to the stretched axis', master_set() == [mk((0,0),(5000,0))] and same_lines(walls_now(), expected([C((0,0),(5000,0),200.0)])))
+chk('STRETCH 35b: WWR rebuilds the faces to the stretched axis', master_set() == [mk((0,0),(5000,0))] and same_lines(walls_now(), expected([C((0,0),(5000,0),200.0)])))
 fresh(); mk_walls(W25); stretch(-500,-500,4500,500,0,60, layers=('X-AXIS',))
 wr(field(-500,-500,4500,500))
-chk('STRETCH 36: axis stretched sideways as a whole -> WR re-centres it, faces unchanged',
+chk('STRETCH 36: axis stretched sideways as a whole -> WWR re-centres it, faces unchanged',
     master_set() == [mk((0,0),(4000,0))] and same_lines(walls_now(), expected([W25])))
 fresh(); mk_walls(W25); stretch(3900,-200,4200,200,0,300, layers=('X-AXIS',)); before = geo()
 msg, _ = say(lambda: wr(field(-500,-500,4500,500)))
 e = face_at((2000,100)); A.G[A.Sym('*T-E*')] = e
 res = A.ev('(wt:ew-resolve *t-e* (list 2000.0 100.2) (wt:net-scan) 0.5)')
-chk('STRETCH 37: axis stretched at one end only (skewed) -> not a wall for EW, WR skips it as ambiguous, nothing changed',
+chk('STRETCH 37: axis stretched at one end only (skewed) -> not a wall for EW, WWR skips it as ambiguous, nothing changed',
     res[0] != 'OK' and geo() == before and 'ambiguous' in msg)
 
 # --- TX protects AKD wall geometry (integration) ---
@@ -2229,7 +2229,7 @@ for a, b in expected(legacy_fix): mkline(a, b, 'A-WALL')
 before = geo()
 A.POINTQ[:] = [[-1000.0, -1000.0, 0.0], [7000.0, 1000.0, 0.0]]
 A.ev('(c:TX)')
-chk('TX window over a legacy off-centre wall: its faces and caps are protected (left to WR)', geo() == before)
+chk('TX window over a legacy off-centre wall: its faces and caps are protected (left to WWR)', geo() == before)
 
 # Position submenu keys (shared by WW and XW)
 res = []
@@ -2246,6 +2246,39 @@ chk('Prompts: WW shows Alignment in start and next-point prompts, XW keeps [Widt
     and '[Width/Alignment/Rectangle/Undo/Close/Settings]' in src and '"Width Alignment Rectangle Undo Close Settings"' in src
     and '[Width/posiTion]' in src and 'Eccentricity' not in src and '"Left Center Right Q W E"' in src
     and 'Alignment [Left/Center/Right] <' in src)
+
+# =========================== Openings hook (AKD WinDoor) ===========================
+def hole_cut(x0, x1, y=0.0, th=150.0):   # what WinDoor's HH does to an AKD wall along +X
+    h = th / 2
+    for f in [e for e, a, b in walls_now() if abs(a[1]-b[1]) < 1e-6 and abs(abs(a[1]-y)-h) < 1e-6 and min(a[0],b[0]) < x0 and max(a[0],b[0]) > x1]:
+        _, a, b = next(l for l in walls_now() if l[0] == f); lo, hi = sorted([a[0], b[0]])
+        A.entdel(f)
+        mkline((lo, a[1]), (x0, a[1]), 'A-WALL'); mkline((x1, a[1]), (hi, a[1]), 'A-WALL')
+    mkline((x0, y-h), (x0, y+h), 'A-WALL'); mkline((x1, y-h), (x1, y+h), 'A-WALL')
+def covered(pt): return any(A.ev(f'(wt:on-seg {P(*pt)} {P(*a)} {P(*b)})') for _, a, b in walls_now())
+def caps_at(x): return sum(1 for _, a, b in walls_now() if near(a, (x,-75)) and near(b, (x,75)) or near(a, (x,75)) and near(b, (x,-75)))
+def opening_ok(): return (not covered((2450,75)) and not covered((2450,-75)) and covered((1000,75)) and covered((3500,-75))
+                          and caps_at(2000) == 1 and caps_at(2900) == 1)
+A.ev('(defun t:openings () (list (list (list 2450.0 0.0 0.0) (list 1.0 0.0 0.0) 900.0)))')
+A.ev('(setq *wt:opening-fns* nil)')
+build([wall((0,0),(6000,0))]); hole_cut(2000, 2900)
+add(((4000,0),(4000,3000)))
+chk('openings: without a provider a rebuild fills the hole (the reported bug)', covered((2450,75)))
+A.ev("(setq *wt:opening-fns* (list 't:undefined-fn 't:openings))")
+build([wall((0,0),(6000,0))]); hole_cut(2000, 2900); before = snapshot()
+rec = add(((4000,0),(4000,3000)))
+chk('openings: WW T into a wall with a hole keeps the hole and one cap per jamb', opening_ok())
+undo_rec(rec)
+chk('openings: Undo restores the holed wall exactly', snapshot() == before)
+add(((0,0),(0,3000))); add(((6000,0),(6000,3000)))
+chk('openings: L corners at both ends keep the hole', opening_ok())
+ew(*[e for e, a, b in masters_now() if abs(a[1]) < 1e-6 and abs(b[1]) < 1e-6])
+chk('openings: EW of the holed wall removes its jamb caps too', caps_at(2000) == 0 and caps_at(2900) == 0 and not covered((1000,75)))
+build([wall((0,0),(6000,0))])
+chk('openings: a wall drawn through a registered opening is cut on creation', opening_ok())
+build([wall((0,500),(6000,500))])
+chk('openings: an opening outside the wall band is ignored', covered((2450,575)) and covered((2450,425)))
+A.ev('(setq *wt:opening-fns* nil)')
 
 print(f'\n{fails} failure(s)')
 sys.exit(1 if fails else 0)

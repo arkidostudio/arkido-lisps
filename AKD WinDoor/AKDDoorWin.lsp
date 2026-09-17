@@ -7,7 +7,7 @@
 ;; Commands:
 ;;   AW   Add window - click 2 points, D=set divisions.
 ;;   WC   Window count (tally by width).
-;;   WR   Window renumber (select subset or Enter=all).
+;;   WRN  Window renumber (select subset or Enter=all).
 ;;   AD   Add door   - click 2 points. Keywords:
 ;;          S = Single, D = Double, G = sliding (then panel count),
 ;;          P = set sliding panel count.
@@ -723,7 +723,7 @@
                  " window(s) into " (itoa (length keys)) " type(s)."))))
   (princ))
 
-(defun c:WR ( / cmde)
+(defun c:WRN ( / cmde)
   (setq cmde (getvar "CMDECHO")) (setvar "CMDECHO" 0)
   (princ "\nSelect windows to renumber [Enter=all]: ")
   (_win-renum (ssget '((-3 ("AWIN")))) nil)
@@ -1582,7 +1582,7 @@
           (princ "\nSchedule drawn.")))))
   (princ))
 
-(princ "\nAKDDW loaded.  AW WC WR  |  AD DC DR  |  DWT  |  LT LC")
+(princ "\nAKDDW loaded.  AW WC WRN  |  AD DC DR  |  DWT  |  LT LC")
 (princ)
 ;; HOLE.LSP - Cut a door/window opening through a two-parallel-line wall.
 ;; Works on LINE and LWPOLYLINE (straight segments) walls.
@@ -2034,7 +2034,7 @@
   (princ))
 
 (defun hole:do (ent pk post / seg1 seg2 p1a p1b p2a p2b dir len w d half
-                          ctr1 c1 c2 b1a b1b b2a b2b osm nearEnd mode capLay clay)
+                          ctr1 c1 c2 b1a b1b b2a b2b osm nearEnd mode capLay clay wts)
   (setq mode (hole:getm))
   (setq seg1 (if (and (= mode "F") (= "LWPOLYLINE" (cdr (assoc 0 (entget ent)))))
                (hole:pickseg-by-vertex ent pk)
@@ -2083,7 +2083,18 @@
                 ((not (and (hole:onseg b1a p1a p1b) (hole:onseg b1b p1a p1b)
                            (hole:onseg b2a p2a p2b) (hole:onseg b2b p2a p2b)))
                   (princ "\nHole doesn't fit within both wall segments — aborted."))
+                ((and post (= (setq wts (akd:wt-status (hole:mid c1 c2) dir w)) "OK"))
+                  ;; AKD WallTool wall: place the object, WallTool cuts the opening
+                  (apply post (list b1a b1b b2a b2b))
+                  (if (not *akd-cancel*)
+                    (progn
+                      (akd:wt-regen (list (list (hole:mid c1 c2) dir w)))
+                      (princ "\nOpening cut by AKD WallTool."))))
+                ((and post (= wts "AMBIG"))
+                  (princ "\nOpening overlaps an AKD WallTool junction or wall end, or the wall is ambiguous — aborted."))
                 (t
+                  (if (and (null post) (= (akd:wt-status (hole:mid c1 c2) dir w) "OK"))
+                    (princ "\nNote: AKD WallTool wall — a hole without a door/window is closed by the next wall rebuild."))
                   (setq capLay (cdr (assoc 8 (entget (car seg1)))))
                   (if (equal (car seg1) (car seg2))
                     (hole:split-pl-two (car seg1) (cadr seg1) b1a b1b (cadr seg2) b2a b2b)
@@ -2553,9 +2564,11 @@
   (entmod (subst (cons 10 a2) (assoc 10 d)
             (subst (cons 11 b2) (assoc 11 d) d))))
 
-(defun cw:delete-group (gname app / e members ss i xd)
+;; entities of one door/window (group members, or block instances with the
+;; same G: key) plus its labels
+(defun akd:opening-ents (gname app / members ss i e xd out)
   (setq members (cw:group-ents gname))
-  (foreach e members (if e (entdel e)))
+  (foreach e members (if e (setq out (cons e out))))
   ;; Block instances use the same G: key without an ACAD_GROUP entry.
   (if (null members)
     (progn
@@ -2564,16 +2577,19 @@
         (repeat (sslength ss)
           (setq e (ssname ss i)
                 xd (cdr (assoc app (cdr (assoc -3 (entget e (list app)))))))
-          (if (equal (_extract-gname xd) gname) (entdel e))
+          (if (equal (_extract-gname xd) gname) (setq out (cons e out)))
           (setq i (1+ i))))))
-  (foreach lbl (_labels-for-gname gname
-                 (if (= app "ADOOR") "ADOORLBL" "AWINLBL"))
-    (entdel lbl)))
+  (append (reverse out)
+          (_labels-for-gname gname (if (= app "ADOOR") "ADOORLBL" "AWINLBL"))))
+
+(defun cw:delete-group (gname app)
+  (foreach e (akd:opening-ents gname app)
+    (if (entget e) (entdel e))))
 
 
 (defun c:CW ( / picked ent pk xd1 info kind xd oldW mid vdir gname typ div
                  newW halfOld halfNew capA capB eA eB basePt inp offset
-                 midNew newCapA newCapB shiftA shiftB p1new p2new cmde)
+                 midNew newCapA newCapB shiftA shiftB p1new p2new cmde wts)
   (setq picked (cw:acquire "\nSelect door or window to resize: "))
   (cond
     ((null picked) (princ "\nCancelled."))
@@ -2615,9 +2631,10 @@
           (setq halfOld (/ oldW 2.0) halfNew (/ newW 2.0)
                 capA (cw:sub mid (cw:scale vdir halfOld))
                 capB (cw:add mid (cw:scale vdir halfOld))
-                eA (cw:find-cap capA) eB (cw:find-cap capB))
+                eA (cw:find-cap capA) eB (cw:find-cap capB)
+                wts (akd:wt-status mid vdir oldW))
           (cond
-            ((or (null eA) (null eB))
+            ((and (/= wts "OK") (or (null eA) (null eB)))
               (princ "\nCap lines not found — cannot resize hole."))
             (t
               (if basePt
@@ -2633,11 +2650,15 @@
                     newCapB (cw:add midNew (cw:scale vdir halfNew))
                     shiftA (cw:sub newCapA capA)
                     shiftB (cw:sub newCapB capB))
+              (cond
+                ((and (= wts "OK") (/= (akd:wt-status midNew vdir newW) "OK"))
+                  (princ "\nNew width leaves the AKD WallTool wall or reaches a junction — not resized."))
+                (t
               (setq cmde (getvar "CMDECHO"))
               (setvar "CMDECHO" 0)
               (command-s "_.UNDO" "_BE")
-              (cw:resize-cap eA shiftA)
-              (cw:resize-cap eB shiftB)
+              (if (/= wts "OK")
+                (progn (cw:resize-cap eA shiftA) (cw:resize-cap eB shiftB)))
               (cw:delete-group gname (if (eq kind 'door) "ADOOR" "AWIN"))
               (cond
                 ((eq kind 'door)
@@ -2649,14 +2670,17 @@
               (if (eq kind 'door)
                 (akd:place-door p1new p2new)
                 (akd:place-window p1new p2new))
+              (if (= wts "OK")
+                (akd:wt-regen (list (list mid vdir oldW) (list midNew vdir newW))))
               (command-s "_.UNDO" "_E")
               (setvar "CMDECHO" cmde)
               (princ (strcat "\nResized from " (rtos oldW 2 2)
-                             " to " (rtos newW 2 2) "."))))))))
+                             " to " (rtos newW 2 2) "."))))))))))
   (princ))
 
 ;; ===================================================================
-;; EW - Erase a placed AKD door/window and repair the wall hole.
+;; EDW - Erase a placed AKD door/window and repair the wall hole.
+;; (Not EW/WR: those names belong to AKD WallTool.)
 ;; ===================================================================
 
 (defun ew:has-end (ent pt / d verts)
@@ -2741,6 +2765,10 @@
         capB (cw:add mid (cw:scale vdir halfOld))
         eA (cw:find-cap capA) eB (cw:find-cap capB))
   (cond
+    ((= (akd:wt-status mid vdir oldW) "OK")
+      ;; AKD WallTool wall: remove the object, WallTool closes the wall
+      (cw:delete-group gname app)
+      (akd:wt-regen (list (list mid vdir oldW))))
     ((not (and eA eB))
       (princ (strcat "\n[" (if gname gname "?")
                      "] caps not found — deleting group only."))
@@ -2809,7 +2837,20 @@
               (_vx-do info kind w mid vdir typ div along)))))))
   (princ))
 
-(defun _vx-do (info kind w mid vdir typ div along / newPk ss ent cmde oldw)
+;; first line/polyline of ss that forms a wall with a parallel partner near pk
+;; (skips e.g. an AKD WallTool centerline inside the wall)
+(defun _vx-wall-ent (ss pk / i e seg d out)
+  (setq i 0)
+  (while (and (not out) (< i (sslength ss)))
+    (setq e (ssname ss i) i (1+ i))
+    (if (setq seg (hole:picksegment e pk))
+      (progn
+        (setq d (akd:unit (mapcar '- (nth 3 seg) (nth 2 seg))))
+        (if (and d (hole:findpartner seg pk d)) (setq out e)))))
+  out)
+
+(defun _vx-do (info kind w mid vdir typ div along / newPk ss ent cmde oldw *hole-force-ctr*)
+  (setq *hole-force-ctr* (mapcar '+ mid (mapcar '(lambda (x) (* x along)) vdir)))   ; hole:do centres here
   (setq newPk (mapcar '+ mid (mapcar '(lambda (x) (* x along)) vdir))
         cmde  (getvar "CMDECHO") oldw (getvar "USERR1"))
   (setvar "CMDECHO" 0) (setvar "USERR1" w)
@@ -2825,9 +2866,9 @@
             (mapcar '- newPk '(500.0 500.0 0.0))
             (mapcar '+ newPk '(500.0 500.0 0.0))
             '((0 . "LINE,LWPOLYLINE"))))
+  (if ss (setq ent (_vx-wall-ent ss newPk)))
   (cond
-    (ss
-      (setq ent (ssname ss 0))
+    (ent
       (hole:do ent newPk
         (if (eq kind 'door) 'hole:post-door 'hole:post-window))
       (command-s "_.UNDO" "_E"))
@@ -2959,7 +3000,7 @@
     ((= lay "A-WALL-DATA") (col:group-at-point (col:point-of e)))
     (t nil)))
 
-(defun c:EW ( / preSet preSs ss n i e info gn seen infos cmde count
+(defun c:EDW ( / preSet preSs ss n i e info gn seen infos cmde count
               cg colgs colcount akdGroups g)
   (setq preSet (ssgetfirst) preSs (cadr preSet))
   (cond
@@ -3055,7 +3096,7 @@
           (if (< o1 o2) b1 b2))))))
 
 (defun c:RH ( / capA capB dA dB a1 a2 b1 b2
-                sa1 sa2 sb1 sb2 pA1 pA2 stubB1 stubB2 cmde)
+                sa1 sa2 sb1 sb2 pA1 pA2 stubB1 stubB2 cmde mA mB rdir)
   (setq capA (car (entsel "\nPick FIRST cap line: ")))
   (setq capB (if capA (car (entsel "\nPick OPPOSITE cap line: "))))
   (cond
@@ -3066,7 +3107,15 @@
       (setq dA (entget capA) dB (entget capB)
             a1 (cdr (assoc 10 dA)) a2 (cdr (assoc 11 dA))
             b1 (cdr (assoc 10 dB)) b2 (cdr (assoc 11 dB))
-            sa1 (rh:find-stub a1 (list capA capB))
+            mA (cw:mid-pt a1 a2) mB (cw:mid-pt b1 b2)
+            rdir (akd:unit (cw:sub mB mA)))
+      (cond
+        ((and rdir (= (akd:wt-status (cw:mid-pt mA mB) rdir (distance mA mB)) "OK"))
+          ;; AKD WallTool wall: WallTool closes it (a registered door/window keeps its hole)
+          (akd:wt-regen (list (list (cw:mid-pt mA mB) rdir (distance mA mB))))
+          (princ "\nHole repaired by AKD WallTool."))
+        (t
+      (setq sa1 (rh:find-stub a1 (list capA capB))
             sa2 (rh:find-stub a2 (list capA capB))
             sb1 (rh:find-stub b1 (list capA capB))
             sb2 (rh:find-stub b2 (list capA capB))
@@ -3077,9 +3126,9 @@
       (entdel capA) (entdel capB)
       (ew:rejoin sa1 stubB1 a1 pA1 "Face 1")
       (ew:rejoin sa2 stubB2 a2 pA2 "Face 2")
-      (command-s "_.UNDO" "_E")
-      (setvar "CMDECHO" cmde)
       (princ "\nHole repaired.")))
+      (command-s "_.UNDO" "_E")
+      (setvar "CMDECHO" cmde)))
   (princ))
 
 ;; ===================================================================
@@ -3495,12 +3544,108 @@
           (unload_dialog dcl_id)))))
   (princ))
 
+;; ===================================================================
+;; AKD WallTool integration (optional; WinDoor works without WallTool)
+;; WallTool owns the wall linework, WinDoor owns the openings. WinDoor reports
+;; its openings as plain records; WallTool rebuilds walls minus those voids,
+;; moves them with a WWD wall move and deletes them with their wall.
+;; ===================================================================
+
+;; -> ((mid dir width ename) ...) straight doors/windows in the current space.
+;; Corner windows (AKD-XW-*) are not reported: their XData stores the corner point
+;; and the first arm only, not two straight openings.
+(defun akd:wt-openings ( / ss i e d xd out)
+  (setq ss (ssget "_X" (list (cons 410 (getvar "CTAB"))
+                             '(-4 . "<OR") '(-3 ("ADOOR")) '(-3 ("AWIN")) '(-4 . "OR>")))
+        i 0)
+  (if ss
+    (repeat (sslength ss)
+      (setq e (ssname ss i)
+            d (entget e '("ADOOR" "AWIN"))
+            xd (cdr (car (cdr (assoc -3 d))))
+            i (1+ i))
+      (if (and (not (wcmatch (strcase (if (assoc 2 d) (cdr (assoc 2 d)) "")) "AKD-XW-*"))
+               (assoc 1011 xd) (assoc 1013 xd) (numberp (cdr (assoc 1040 xd))))
+        (setq out (cons (list (cdr (assoc 1011 xd)) (cdr (assoc 1013 xd)) (cdr (assoc 1040 xd)) e) out)))))
+  out)
+
+;; tagged door/window ename -> every entity of it (block or group members) + label
+(defun akd:wt-parts (id / info gn)
+  (if (setq info (cw:read-xd id))
+    (progn
+      (setq gn (_extract-gname (cadr info)))
+      (if (and gn (/= gn ""))
+        (akd:opening-ents gn (if (eq (car info) 'door) "ADOOR" "AWIN"))
+        (list id)))))
+
+;; WallTool event: delete these openings. -> (nil erased nil)
+(defun akd:wt-removed (ids / out)
+  (foreach id ids
+    (foreach e (akd:wt-parts id)
+      (if (and (= (type e) 'ENAME) (entget e))
+        (progn (entdel e) (setq out (cons e out))))))
+  (if out (list nil out nil)))
+
+(defun akd:pt+ (p v)
+  (if (caddr p)
+    (list (+ (car p) (car v)) (+ (cadr p) (cadr v)) (caddr p))
+    (list (+ (car p) (car v)) (+ (cadr p) (cadr v)))))
+
+;; entity data translated by v (points 10-13, XData position 1011)
+(defun akd:xlate (d v)
+  (mapcar
+    '(lambda (p)
+       (cond
+         ((and (member (car p) '(10 11 12 13)) (listp (cdr p)) (numberp (cadr p)))
+           (cons (car p) (akd:pt+ (cdr p) v)))
+         ((= (car p) -3)
+           (cons -3 (mapcar '(lambda (a)
+                               (cons (car a)
+                                     (mapcar '(lambda (q) (if (= (car q) 1011) (cons 1011 (akd:pt+ (cdr q) v)) q))
+                                             (cdr a))))
+                            (cdr p))))
+         (t p)))
+    d))
+
+;; WallTool event: move these openings by vec. -> (nil nil old-data)
+(defun akd:wt-moved (ids vec / done old out)
+  (foreach id ids
+    (foreach e (akd:wt-parts id)
+      (if (and (= (type e) 'ENAME) (not (member e done))
+               (setq old (entget e '("ADOOR" "AWIN" "ADOORLBL" "AWINLBL"))))
+        (progn
+          (entmod (akd:xlate old vec))
+          (setq done (cons e done) out (cons old out))))))
+  (if out (list nil nil out)))
+
+;; registration: idempotent, independent of load order
+(foreach pr '((*wt:opening-fns* . akd:wt-openings)
+              (*wt:wall-moved-fns* . akd:wt-moved)
+              (*wt:opening-removed-fns* . akd:wt-removed))
+  (if (not (and (listp (eval (car pr))) (member (cdr pr) (eval (car pr)))))
+    (set (car pr) (cons (cdr pr) (if (listp (eval (car pr))) (eval (car pr)))))))
+
+(defun akd:wt-fn-p (s) (member (type (eval s)) '(SUBR USUBR EXRXSUBR)))
+
+;; "OK" = an AKD WallTool wall owns this opening, "AMBIG", or "NONE" (ordinary wall
+;; or WallTool not loaded)
+(defun akd:wt-status (mid dir w)
+  (if (akd:wt-fn-p 'wt:api-opening-status) (wt:api-opening-status (list mid dir w)) "NONE"))
+
+;; ask WallTool to regenerate the walls holding these (mid dir width) openings
+(defun akd:wt-regen (recs)
+  (if (akd:wt-fn-p 'wt:api-openings-changed) (wt:api-openings-changed recs)))
+
+(defun akd:unit (v / l)
+  (setq l (distance '(0.0 0.0 0.0) v))
+  (if (> l 1e-9) (mapcar '(lambda (x) (/ x l)) v)))
+
 ;; Optional per-user overrides: place AKDDoorWin.cfg alongside the .lsp
 ;; with (setq *cfg-...* ...) lines. Loaded last so it wins over defaults.
 (if (findfile "AKDDoorWin.cfg")
     (load (findfile "AKDDoorWin.cfg")))
 
-(princ (strcat "\nAKDDoorWin v" *akd-doorwin-version* " loaded. AD/AW/ACW=hole+door/win/curtain, ADD/AWW/ACWW=2-click, AXW/HHX=corner win/hole, CW=resize, EW=erase+repair, SET=settings. ["
+(princ (strcat "\nAKDDoorWin v" *akd-doorwin-version* " loaded. AD/AW/ACW=hole+door/win/curtain, ADD/AWW/ACWW=2-click, AXW/HHX=corner win/hole, CW=resize, EDW=erase+repair, SET=settings. ["
                (hole:getm) " W=" (rtos (hole:getw) 2 2)
                " G=" (rtos (hole:getg) 2 2) "]"))
 (princ)
