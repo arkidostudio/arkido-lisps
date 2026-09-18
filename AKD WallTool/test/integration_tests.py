@@ -108,26 +108,31 @@ def mkline(a, b, layer):
     A.ev(f'(entmake (list (cons 0 "LINE") (cons 8 "{layer}") (cons 10 {P3(a)}) (cons 11 {P3(b)})))'); return A.LAST[0]
 def info(e): A.G[A.Sym('*T-E*')] = e; return A.ev('(cw:read-xd *t-e*)')
 def reg_count(): return [len([x for x in (A.ev(s) or []) if x == 'AKD:WT-' + t]) for s, t in
-                         (('*wt:opening-fns*', 'OPENINGS'), ('*wt:wall-moved-fns*', 'MOVED'), ('*wt:opening-removed-fns*', 'REMOVED'))]
+                         (('*wt:opening-fns*', 'OPENINGS'), ('*wt:wall-moved-fns*', 'MOVED'),
+                          ('*wt:opening-removed-fns*', 'REMOVED'), ('*wt:erase-fns*', 'ERASE'))]
+def run_ew(*ids):
+    A.SSFIRST[0] = list(ids); A.ev('(c:EW)')
 
 # ---------------------------------------------------------------- E / AN / AO: command names
 def cmds(path): return set(m.upper() for m in re.findall(r'\(defun\s+c:([^\s()]+)', open(path).read(), re.I))
 cw_, cd_ = cmds(WT), cmds(WD)
-chk('AO: complete command-name audit: WallTool and WinDoor define no common command', not (cw_ & cd_))
-chk('AM/AN: WallTool defines WWR and no WR; WinDoor uses EDW / WRN, not EW / WR',
-    'WWR' in cw_ and 'WR' not in cw_ and {'EDW', 'WRN'} <= cd_ and not ({'EW', 'WR'} & cd_))
-chk('E: after loading both, EW and WWR are WallTool\'s, EDW and WRN are WinDoor\'s',
-    A.ev("c:EW") == A.ev("c:EW") and 'WT:EW-ERASE' in str(A.ev("c:EW")) and 'WT:WR-REPAIR' in str(A.ev("c:WWR"))
-    and 'EW:DO-ONE' in str(A.ev("c:EDW")) and A.ev("c:WR") is None)
+wdsrc = open(WD).read()
+chk('AO: command-name audit: EW is the only shared command, and WinDoor defines it only as a fallback',
+    (cw_ & cd_) == {'EW'}
+    and re.search(r"\(if \(not \(member \(type wt:ew-erase\)[^\n]*\n\s*\(defun c:EW ", wdsrc))
+chk('AM/AN: WallTool defines WWR and no WR; WinDoor renumbers with WRN and defines no WR / EDW',
+    'WWR' in cw_ and 'WR' not in cw_ and 'WRN' in cd_ and not ({'WR', 'EDW'} & cd_))
+chk('E: with both loaded, EW and WWR are WallTool\'s and WinDoor did not override EW',
+    'WT:EW-ERASE' in str(A.ev("c:EW")) and 'WT:WR-REPAIR' in str(A.ev("c:WWR")) and A.ev("c:WR") is None)
 wtsrc = open(WT).read()
 chk('WallTool core: no XData, no VL/VLA/VLAX, no WinDoor names',
     not re.search(r'\(\s*vla?x?-', wtsrc, re.I) and not re.search(r"[('\s]-3[\s)]", re.sub(r';[^\n]*', '', wtsrc))
     and not re.search(r'ADOOR|AWIN|akd:', re.sub(r';[^\n]*', '', wtsrc), re.I))
 
 # ---------------------------------------------------------------- AK / C: registration
-chk('C: WallTool then WinDoor: providers registered once', reg_count() == [1, 1, 1])
+chk('C: WallTool then WinDoor: providers registered once', reg_count() == [1, 1, 1, 1])
 A.load(WD); A.load(WD)
-chk('AK: reloading WinDoor twice keeps a single registration per hook', reg_count() == [1, 1, 1])
+chk('AK: reloading WinDoor twice keeps a single registration per hook', reg_count() == [1, 1, 1, 1])
 
 # ---------------------------------------------------------------- F / G / AE: placement + WW rebuild
 fresh(); add(((0,0),(6000,0)))
@@ -304,9 +309,25 @@ chk('AH: redundant node healed (two spans joined): both doors kept, both holes i
 
 # ---------------------------------------------------------------- AD: EDW, CW, RH
 fresh(); add(((0,0),(6000,0))); d1, l1 = place((2000,0), 900)
-A.G[A.Sym('*T-E*')] = d1; A.ev('(ew:do-one (cw:read-xd *t-e*))')
-chk('AD: EDW on a WallTool wall: door + label deleted, WallTool closes the wall, no jambs left',
-    not alive(d1) and not alive(l1) and solid_x(1550, 2450) and len([1 for _, a, b in walls_now()]) == 4)
+run_ew(d1)
+chk('AD: EW on a door: door + label deleted, WallTool closes the wall, no jambs left',
+    not alive(d1) and not alive(l1) and solid_x(1550, 2450) and len([1 for _, a, b in walls_now()]) == 4
+    and master_set() == [mk((0,0),(6000,0))])
+fresh(); add(((0,0),(6000,0))); d1, l1 = place((2000,0), 900); w1, wl = place((4500,0), 1200, kind='window')
+run_ew(d1, face_line((3000,75)), w1)
+chk('EW combined: wall + door + window in one selection -> all gone',
+    not any(alive(e) for e in (d1, l1, w1, wl)) and not walls_now() and not masters_now())
+fresh(); add(((0,0),(6000,0))); d1, l1 = place((2000,0), 900); w1, _ = place((4500,0), 1200, kind='window')
+run_ew(w1)
+chk('EW on one window only: its hole closes, the wall and the other door stay',
+    not alive(w1) and alive(d1) and solid_x(3900, 5100) and hole_x(1550, 2450))
+fresh(); add(((0,0),(6000,0))); d1, l1 = place((2000,0), 900)
+run_ew(face_line((5000,75)))
+chk('EW on the wall itself still deletes the wall with its door', not walls_now() and not alive(d1) and not alive(l1))
+fresh(); add(((0,0),(6000,0))); d1, _ = place((2000,0), 900)
+circ = A.ev('(progn (entmake (list (cons 0 "CIRCLE") (cons 8 "0") (cons 10 (list 0.0 0.0 0.0)) (cons 40 5.0))) (entlast))')
+run_ew(circ)
+chk('EW: an object neither tool owns is ignored, nothing erased', alive(d1) and alive(circ) and hole_x(1550, 2450))
 fresh(); add(((0,0),(6000,0))); d1, _ = place((2000,0), 900)
 A.G[A.Sym('*T-E*')] = d1; A.ev(f'(akd:wt-regen (list (list {P3((2000,0))} {P3((1,0))} 900.0)))')
 chk('re-regeneration with the door still registered keeps the hole (no duplicate jambs)', hole_x(1550, 2450))
@@ -327,7 +348,7 @@ fresh(); add(((0,0),(6000,0))); d1, _ = place((2000,0), 900)
 A.load(WT); A.ev('(setq *wt:cfg* *wt:cfg-defaults* *wt:reg* nil)'); A.load(WD)
 add(((4500,0),(4500,3000)))
 chk('AF/AK: after reloading both files (new registry) the opening still survives a rebuild; one registration each',
-    hole_x(1550, 2450) and reg_count() == [1, 1, 1])
+    hole_x(1550, 2450) and reg_count() == [1, 1, 1, 1])
 
 # ---------------------------------------------------------------- AI / AJ: provider robustness
 A.ev("(setq *t-saved* *wt:opening-fns*)")
@@ -360,8 +381,9 @@ out = sub(f"A.load({WD!r})\n"
           "A.G[A.Sym('*T-E*')] = e\n"
           "st = A.ev('(akd:wt-status (list 3000.0 75.0 0.0) (list 1.0 0.0 0.0) 900.0)')\n"
           "A.ev(\"(hole:do *t-e* (list 3000.0 0.0 0.0) nil)\")\n"
-          "print('STATUS', st, 'PIECES', len(A.db_lines('WALL')), 'REGEN', A.ev('(akd:wt-regen nil)'), 'EW', A.ev('c:EW') is None)")
-chk('B: WinDoor alone: status NONE, legacy hole cut splits both faces, no WallTool calls, no EW', 'STATUS NONE PIECES 4 REGEN None EW True' in out)
+          "print('STATUS', st, 'PIECES', len(A.db_lines('WALL')), 'REGEN', A.ev('(akd:wt-regen nil)'), 'EW', 'EW-ERASE-ENTS' in str(A.ev('c:EW')))")
+chk('B: WinDoor alone: status NONE, legacy hole cut splits both faces, no WallTool calls, its own EW defined',
+    'STATUS NONE PIECES 4 REGEN None EW True' in out)
 out = sub(f"A.load({WD!r}); A.load({WT!r}); A.ev('(setq *wt:cfg* *wt:cfg-defaults*)')\n"
           "A.ev('(setq *wt:thk* 150.0 *wt:pos* \"CENTER\")')\n"
           "A.ev('(wt:walls-add (list (list (list 0.0 0.0) (list 6000.0 0.0))))')\n"
@@ -369,8 +391,9 @@ out = sub(f"A.load({WD!r}); A.load({WT!r}); A.ev('(setq *wt:cfg* *wt:cfg-default
           "A.ev('(_tagdoor *t-e* 900.0 \"S\" 1 1.0 (list 3000.0 0.0 0.0) (list 1.0 0.0 0.0) \"ADOOR-X\")')\n"
           "A.ev('(wt:walls-add (list (list (list 4500.0 0.0) (list 4500.0 3000.0))))')\n"
           "gap = not any(abs(a[1]-75) < 1e-6 and min(a[0],b[0]) < 3000 < max(a[0],b[0]) for _, a, b in A.db_lines('A-WALL'))\n"
-          "print('GAP', gap, 'FNS', A.ev('*wt:opening-fns*'))")
-chk('D: WinDoor then WallTool: hook survives WallTool load, opening kept', 'GAP True FNS [\'AKD:WT-OPENINGS\']' in out)
+          "print('GAP', gap, 'FNS', A.ev('*wt:opening-fns*'), 'EW', 'WT:EW-ERASE' in str(A.ev('c:EW')))")
+chk('D: WinDoor then WallTool: hook survives WallTool load, opening kept, WallTool owns EW',
+    "GAP True FNS ['AKD:WT-OPENINGS'] EW True" in out)
 
 print(f'\n{fails} failure(s)')
 sys.exit(1 if fails else 0)

@@ -9,8 +9,8 @@ Companion tool: `WW.lsp` (root of repo) draws double-line walls. Compatible with
 
 ## AKD WallTool integration (2026-09-17)
 - Provider/hook section near the end of `AKDDoorWin.lsp` (`akd:wt-*`). WallTool API: `wt:api-opening-status`, `wt:api-openings-changed`.
-- WallTool walls: `hole:do` (AD/AW/ACW), `ew:do-one` (EDW/VX), `CW`, `RH` delegate linework to WallTool. Ordinary walls keep the legacy code.
-- `EW` renamed `EDW`, `WR` renamed `WRN` (WallTool owns EW / WWR).
+- WallTool walls: `hole:do` (AD/AW/ACW), `ew:do-one` (EW/VX), `CW`, `RH` delegate linework to WallTool. Ordinary walls keep the legacy code.
+- `EW` shared: WallTool's EW erases walls + calls `akd:wt-erase`; WinDoor defines `c:EW` only when WallTool is absent (`akd:ew-erase-ents` is the shared core). `WR` renamed `WRN` (WallTool owns WWR).
 - Integration tests: `AKD WallTool/test/integration_tests.py` (loads this file).
 - Corner windows unsupported: XData lacks arm geometry (see README).
 

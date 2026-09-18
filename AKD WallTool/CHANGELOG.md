@@ -3,6 +3,7 @@
 ## Unreleased (walltool-integration)
 
 - **Openings** — registered door/window voids (hooks `*wt:opening-fns*`, `*wt:wall-moved-fns*`, `*wt:opening-removed-fns*`; API `wt:api-opening-status`, `wt:api-openings-changed`). Every rebuild draws wall minus openings with jambs; WWD moves openings with the wall; removed spans delete their openings; WWR / TW / TX treat openings as intentional. Works with AKD WinDoor in either load order.
+- **EW** also erases doors/windows of a registered opening tool in the same selection (hook `*wt:erase-fns*`), so WallTool and AKD WinDoor share one `EW`.
 - **WR renamed WWR** (no `WR` alias) so WallTool and AKD WinDoor share no command names.
 
 - **Centerline masters** — every stored X-AXIS master is the wall's geometric centerline. LEFT / CENTER / RIGHT are creation alignments for WW, Rectangle and XW; offset ends meet the centerline they land on, so drawn walls look the same as before.

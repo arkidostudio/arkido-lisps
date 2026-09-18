@@ -11,7 +11,7 @@ Architectural axes, grids and intelligent 2D walls for AutoCAD. Plain AutoLISP +
 | `WW` | Draw Intelligent Wall | Walls with width, position, rectangle, close and undo; junctions clean themselves. |
 | `XW` | Axis to Wall | Converts selected LINEs into walls. |
 | `WWF` | Wall From Wall | Parallel wall at a clear distance from a clicked wall face. |
-| `EW` | Erase Wall | Erases one wall span and repairs the walls around it. |
+| `EW` | Erase Wall | Erases one wall span and repairs the walls around it; also erases doors/windows of a registered opening tool in the same selection. |
 | `WWD` | Wall to Distance | Moves a wall so a picked face is at a clear distance from another wall's face. |
 | `WWE` | Wall Connect | Connects one wall end to a picked target wall (extends, trims or detaches as needed). |
 | `TW` | Local Wall Repair | Connection repair: rebuilds and reconnects AKD walls and ordinary double-line walls inside a window. |
@@ -142,12 +142,14 @@ WallTool owns the wall; an opening tool (AKD WinDoor) owns doors and windows. Wa
 | `*wt:opening-fns*` | `(fn)` | `((mid dir width id) ...)`: `mid` on the wall centerline, `dir` along the wall, `width` along the wall, `id` opaque to WallTool |
 | `*wt:wall-moved-fns*` | `(fn ids vector)` | moves those openings (WWD) |
 | `*wt:opening-removed-fns*` | `(fn ids)` | deletes those openings (their wall is gone) |
+| `*wt:erase-fns*` | `(fn ids)` | EW: erases that tool's objects in the selection, returns the enames it took |
 
 Event functions return their changes as `(created erased modified-old-data)` so WallTool's rollback covers them. Opening tools call `wt:api-opening-status` (`"OK"` / `"AMBIG"` / `"NONE"`) and `wt:api-openings-changed` (regenerate the walls holding the given `(mid dir width)` openings).
 
 - Every wall rebuild (WW, XW, EW, WWF, WWD, WWE, TW, WWR, axis healing) draws **wall minus registered openings**: the face gap and both jambs are part of the outline. Old jambs are erased first; overlapping openings form one void.
 - An opening belongs to a wall only when exactly one logical wall (collinear spans with one band) contains its midpoint, the whole opening lies inside that wall and no other wall's body reaches it. The association is recomputed from geometry every time, so it survives splits at T/X, joins, reloads and Undo.
 - No wall → ignored. Several walls, a junction inside the opening, or an opening past the wall end → not kept and reported (`... hole not kept.`). The object itself is left alone.
+- `EW` offers its selection to the erase hook first, so one `EW` erases walls, doors and windows together in one undo step (AKD WinDoor defines its own `EW` only when WallTool is absent).
 - WWD moves the openings lying on the moved wall by the same vector. A wall span removed by EW, TW or WWE takes its openings with it unless a wall still holds them when the command ends (WWE replacing a span keeps them). WWF and XW never copy openings.
 - WWR and TW treat a registered opening as intentional: jambs are not wall ends, the face gap is not damage, and TX leaves jambs alone. Holes without a registered object are ordinary damage and are closed.
 - Malformed records and undefined hooks are skipped. A hook that raises an error aborts the command and the transaction is rolled back.
@@ -175,7 +177,7 @@ Walls are ordinary lines, so STRETCH works on them. WallTool reads wall geometry
 - Legacy drawings are only migrated by WWR. Until then, a master that is not centered between its faces is not recognised as a wall by EW, WWF or TW, and WWD / WWE refuse it with "Legacy wall axis detected. Run WWR first."; TX and TW leave its lines alone.
 - WWR needs both faces of a wall beside a master. A master lying exactly on a face with other parallel wall faces on its other side is ambiguous and skipped. Two neighbouring walls that have both lost their masters at the same corner (no cap, no known wall at that end) are not reconstructed.
 - WWR cleanup erases unclaimed A-WALL pieces inside the window next to the walls it repairs.
-- `WW`, `AX` and `EW` share names with older AKDWall / AKDAxisTool tools; do not load both. AKD WinDoor uses `EDW` / `WRN` and loads alongside WallTool.
+- `WW`, `AX` and `EW` share names with older AKDWall / AKDAxisTool tools; do not load both. AKD WinDoor shares `EW` (WallTool's wins when both are loaded) and uses `WRN` for renumbering; it loads alongside WallTool in either order.
 
 **Openings**
 - Openings are straight only. Corner windows (AKD WinDoor `AXW` / `HHX`) are not registered and are closed by a wall rebuild.

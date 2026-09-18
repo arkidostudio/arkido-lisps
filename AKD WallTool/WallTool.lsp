@@ -566,6 +566,8 @@
 ;;;                                              width along the wall, id opaque (may be nil)
 ;;;   *wt:wall-moved-fns*       (fn ids vec)  move those openings by vec (a WWD wall move)
 ;;;   *wt:opening-removed-fns*  (fn ids)      delete those openings (their wall is gone)
+;;;   *wt:erase-fns*            (fn ids)      EW: erase the objects of that tool among the
+;;;                                           selected enames; returns the enames it consumed
 ;;; Event functions return their drawing changes as (created erased modified-old-data)
 ;;; (or nil) so WallTool's own rollback covers them; the AutoCAD undo group covers the rest.
 ;;; Association is geometric and recomputed every time (survives splits, joins, Undo):
@@ -1616,17 +1618,24 @@
            (t (list "NONE" nil))))))
 
 ;; items from wt:ss-items -> erase the selected master segments, one transaction
+;; Items this command could not attribute to a wall. While *wt:ew-defer* is on
+;; (c:EW) they are collected in *wt:ew-unclaimed* for the erase hook instead of
+;; being reported here.
+(setq *wt:ew-unclaimed* nil)
+(defun wt:ew-unclaim (en)
+  (if *wt:ew-defer* (setq *wt:ew-unclaimed* (cons en *wt:ew-unclaimed*))))
+
 (defun wt:ew-erase (items margin / net walls amb none other r)
-  (setq net (wt:net-scan) amb 0 none 0 other 0)
+  (setq net (wt:net-scan) amb 0 none 0 other 0 *wt:ew-unclaimed* nil)
   (foreach it items
     (if (/= (caddr it) "LINE")
-      (setq other (1+ other))
+      (progn (setq other (1+ other)) (wt:ew-unclaim (car it)))
       (progn
         (setq r (wt:ew-resolve (car it) (cadr it) net margin))
         (cond ((= (car r) "OK")
                (if (not (assoc (car (cadr r)) walls)) (setq walls (cons (cadr r) walls))))
               ((= (car r) "AMBIG") (setq amb (1+ amb)))
-              (t (setq none (1+ none)))))))
+              (t (setq none (1+ none)) (wt:ew-unclaim (car it)))))))
   (if walls
     (progn
       (wt:pend-begin)
@@ -1635,18 +1644,52 @@
       (princ (strcat "\n" (itoa (length walls)) " wall(s) erased."))))
   (if (> amb 0)
     (princ (strcat "\n" (itoa amb) " ambiguous wall line(s) skipped. Select closer to the wall segment to erase.")))
-  (if (> none 0)
+  (if (and (> none 0) (not *wt:ew-defer*))
     (princ (strcat "\n" (itoa none) " line(s) not identified as AKD WallTool walls, skipped.")))
-  (if (> other 0)
+  (if (and (> other 0) (not *wt:ew-defer*))
     (princ (strcat "\n" (itoa other) " unsupported object(s) ignored.")))
   walls)
 
-(defun c:EW (/ *error* ss)
+;; Objects of other tools (AKD WinDoor doors/windows) that EW could not attribute
+;; to a wall: each provider erases its own and returns the enames it took. Called
+;; after the wall transaction, so a provider may run WallTool rebuilds of its own
+;; (a door on a wall erased just now is already gone with it).
+(defun wt:erase-hook (ids / r out)
+  (foreach f (wt:hook-fns *wt:erase-fns*)
+    (setq r (apply f (list ids)))
+    (while (and (= (type r) 'LIST) r)
+      (if (= (type (car r)) 'ENAME) (setq out (cons (car r) out)))
+      (setq r (cdr r))))
+  out)
+
+(defun wt:ew-left (ens done / out)
+  (foreach e ens (if (not (member e done)) (setq out (cons e out))))
+  (reverse out))
+
+(defun wt:ew-alive (ens / out)
+  (foreach e ens (if (entget e) (setq out (cons e out))))
+  (reverse out))
+
+;; EW erases walls, and doors/windows of any registered tool, in one undo step.
+(defun c:EW (/ *error* ss rest left *wt:ew-defer*)
   (setq *error* wt:error)
   (if (setq ss (ssget "_I")) (sssetfirst nil nil))   ; before any command clears PickFirst
   (wt:begin)
-  (if (not ss) (progn (princ "\nSelect wall: ") (setq ss (ssget))))
-  (if ss (wt:ew-erase (wt:ss-items ss) (wt:pick-margin)))
+  (if (not ss)
+    (progn (princ (if *wt:erase-fns* "\nSelect wall, door or window: " "\nSelect wall: "))
+           (setq ss (ssget))))
+  (if ss
+    (progn
+      (setq *wt:ew-defer* (and *wt:erase-fns* t))
+      (wt:ew-erase (wt:ss-items ss) (wt:pick-margin))
+      (if *wt:ew-defer*
+        (progn
+          (setq rest (wt:ew-alive *wt:ew-unclaimed*)         ; erased with their wall already
+                left (wt:ew-left rest (wt:erase-hook rest)))
+          (if left
+            (princ (strcat "\n" (itoa (length left))
+                           " object(s) not identified as walls, doors or windows, skipped.")))))
+      (setq *wt:ew-unclaimed* nil)))
   (wt:end))
 
 ;;; ===================================================================

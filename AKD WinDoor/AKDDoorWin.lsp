@@ -2679,8 +2679,9 @@
   (princ))
 
 ;; ===================================================================
-;; EDW - Erase a placed AKD door/window and repair the wall hole.
-;; (Not EW/WR: those names belong to AKD WallTool.)
+;; EW - Erase placed AKD doors/windows and repair the wall.
+;; With AKD WallTool loaded, its EW erases walls and doors/windows together and
+;; calls akd:wt-erase below. (WinDoor's renumber stays WRN: WallTool owns WWR.)
 ;; ===================================================================
 
 (defun ew:has-end (ent pt / d verts)
@@ -3000,64 +3001,83 @@
     ((= lay "A-WALL-DATA") (col:group-at-point (col:point-of e)))
     (t nil)))
 
-(defun c:EDW ( / preSet preSs ss n i e info gn seen infos cmde count
-              cg colgs colcount akdGroups g)
-  (setq preSet (ssgetfirst) preSs (cadr preSet))
-  (cond
-    ((and preSs (> (sslength preSs) 0))
-      (setq ss preSs) (sssetfirst nil nil))
-    (t
-      (princ "\nSelect doors/windows to remove: ")
-      (setq ss (ssget))))
-  (cond
-    ((null ss) (princ "\nNothing selected."))
-    (t
-      (setq n (sslength ss) i 0 seen nil infos nil colgs nil)
-      (setq akdGroups (ew:akd-groups))
-      (while (< i n)
-        (setq e (ssname ss i))
-        (setq cg (col:resolve e))
+;; Erase the AKD doors/windows among `ents` (enames), closing each wall through
+;; AKD WallTool when it owns it, otherwise by merging the stubs. Opens no undo
+;; group of its own: the caller owns the transaction.
+;; loose = a lone entity that carries no AKD data may resolve to the nearest
+;; tagged door/window (WinDoor's own EW pick); off when WallTool routes the
+;; selection, so a picked wall line is never read as a nearby door.
+;; -> (consumed-enames door-count column-groups)
+(defun akd:ew-erase-ents (ents loose / e info gn seen infos cg colgs akdGroups g consumed count)
+  (setq akdGroups (ew:akd-groups) count 0)
+  (foreach e ents
+    (setq cg (col:resolve e))
+    (cond
+      (cg
+        (setq consumed (cons e consumed))
+        (if (not (member (car cg) (mapcar 'car colgs)))
+          (setq colgs (cons cg colgs))))
+      (t
+        (setq g (ew:group-of-ent e akdGroups))
         (cond
-          (cg
-            (if (not (member (car cg) (mapcar 'car colgs)))
-              (setq colgs (cons cg colgs))))
+          (g (setq info (ew:info-from-group g)))
           (t
-            (setq g (ew:group-of-ent e akdGroups))
-            (cond
-              (g (setq info (ew:info-from-group g)))
-              (t
-                (setq info (cw:read-xd e))
-                (if (and (null info) (= n 1))
-                  (setq info (cw:nearest-tagged (cw:get-pk-of e))))))
-            (if info
-              (progn
-                (setq gn (_extract-gname (cadr info)))
-                (if (and gn (not (member gn seen)))
-                  (setq seen (cons gn seen)
-                        infos (cons info infos)))))))
-        (setq i (1+ i)))
-      (cond
-        ((and (null infos) (null colgs))
-          (princ "\nNo AKD doors/windows/columns in selection."))
-        (t
-          (setq cmde (getvar "CMDECHO"))
-          (setvar "CMDECHO" 0)
-          (command-s "_.UNDO" "_BE")
-          (setq count 0 colcount (length colgs))
-          (foreach info infos
-            (ew:do-one info)
-            (setq count (1+ count)))
-          (command-s "_.UNDO" "_E")
-          (setvar "CMDECHO" cmde)
-          (princ (strcat "\n" (itoa count) " door/win removed."))
-          (cond
-            ((zerop colcount))
-            ((not (member 'C:EC (atoms-family 1)))
-              (princ "\nColumn(s) detected — load AKDColumn and run EC."))
-            (t
-              (princ "\nColumn(s) detected — running EC (re-pick the column).")
-              (c:EC)))))))
-  (princ))
+            (setq info (cw:read-xd e))
+            (if (and (null info) loose (= (length ents) 1))
+              (setq info (cw:nearest-tagged (cw:get-pk-of e))))))
+        (if info
+          (progn
+            (setq consumed (cons e consumed)
+                  gn (_extract-gname (cadr info)))
+            (if (and gn (not (member gn seen)))
+              (setq seen (cons gn seen)
+                    infos (cons info infos))))))))
+  (foreach info infos
+    (ew:do-one info)
+    (setq count (1+ count)))
+  (list consumed count colgs))
+
+;; AKD WallTool EW hook: erase our objects in its selection, report what we took
+(defun akd:wt-erase (ids / r)
+  (setq r (akd:ew-erase-ents ids nil))
+  (if (> (cadr r) 0) (princ (strcat "\n" (itoa (cadr r)) " door/win removed.")))
+  (if (caddr r) (princ "\nColumn(s) detected — run EC to remove them."))
+  (car r))
+
+;; EW without AKD WallTool loaded. When WallTool is present its own EW erases
+;; walls, doors and windows together and calls akd:wt-erase, so this is skipped.
+(if (not (member (type wt:ew-erase) '(SUBR USUBR EXRXSUBR)))
+  (defun c:EW ( / preSet preSs ss n i ents cmde r)
+    (setq preSet (ssgetfirst) preSs (cadr preSet))
+    (cond
+      ((and preSs (> (sslength preSs) 0))
+        (setq ss preSs) (sssetfirst nil nil))
+      (t
+        (princ "\nSelect doors/windows to remove: ")
+        (setq ss (ssget))))
+    (cond
+      ((null ss) (princ "\nNothing selected."))
+      (t
+        (setq n (sslength ss) i 0)
+        (while (< i n) (setq ents (cons (ssname ss i) ents) i (1+ i)))
+        (setq cmde (getvar "CMDECHO"))
+        (setvar "CMDECHO" 0)
+        (command-s "_.UNDO" "_BE")
+        (setq r (akd:ew-erase-ents (reverse ents) t))
+        (command-s "_.UNDO" "_E")
+        (setvar "CMDECHO" cmde)
+        (cond
+          ((and (zerop (cadr r)) (null (caddr r)))
+            (princ "\nNo AKD doors/windows/columns in selection."))
+          (t (princ (strcat "\n" (itoa (cadr r)) " door/win removed."))))
+        (cond
+          ((null (caddr r)))
+          ((not (member 'C:EC (atoms-family 1)))
+            (princ "\nColumn(s) detected — load AKDColumn and run EC."))
+          (t
+            (princ "\nColumn(s) detected — running EC (re-pick the column).")
+            (c:EC)))))
+    (princ)))
 
 ;; ===================================================================
 ;; RH - Repair Hole. Pick two cap lines; merges wall stubs back.
@@ -3621,7 +3641,8 @@
 ;; registration: idempotent, independent of load order
 (foreach pr '((*wt:opening-fns* . akd:wt-openings)
               (*wt:wall-moved-fns* . akd:wt-moved)
-              (*wt:opening-removed-fns* . akd:wt-removed))
+              (*wt:opening-removed-fns* . akd:wt-removed)
+              (*wt:erase-fns* . akd:wt-erase))
   (if (not (and (listp (eval (car pr))) (member (cdr pr) (eval (car pr)))))
     (set (car pr) (cons (cdr pr) (if (listp (eval (car pr))) (eval (car pr)))))))
 
@@ -3645,7 +3666,7 @@
 (if (findfile "AKDDoorWin.cfg")
     (load (findfile "AKDDoorWin.cfg")))
 
-(princ (strcat "\nAKDDoorWin v" *akd-doorwin-version* " loaded. AD/AW/ACW=hole+door/win/curtain, ADD/AWW/ACWW=2-click, AXW/HHX=corner win/hole, CW=resize, EDW=erase+repair, SET=settings. ["
+(princ (strcat "\nAKDDoorWin v" *akd-doorwin-version* " loaded. AD/AW/ACW=hole+door/win/curtain, ADD/AWW/ACWW=2-click, AXW/HHX=corner win/hole, CW=resize, EW=erase+repair, SET=settings. ["
                (hole:getm) " W=" (rtos (hole:getw) 2 2)
                " G=" (rtos (hole:getg) 2 2) "]"))
 (princ)
