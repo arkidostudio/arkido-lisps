@@ -1,0 +1,2 @@
+- [CADLisps project state](project_cadlisps.md) — AX (Draw Axis) + XWW (Axis-to-Wall) tools, junction logic, layer conventions, known unhandled 3-way case.
+- [AutoLISP working style](feedback_autolisp.md) — prefer direct entity manipulation (entmod/entmakex) over AutoCAD FILLET/BREAK commands; wait for diagnostic + screenshot before guessing.
