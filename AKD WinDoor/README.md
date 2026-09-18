@@ -17,13 +17,15 @@ Plan-view door and window tool that cuts the opening through a two-parallel-line
 
 Type a number at the main prompt to set width directly (e.g. `AD` then `800` = 800mm door width).
 
-### 2-click placement (no hole cutting)
+### 2-click placement (pick both points on a wall face)
+
+Click two points **on one face of the wall**: they set where the opening starts and ends along the wall. The hole is cut and the object placed in it, exactly as `AD` / `AW` / `ACW` do, but with the width taken from your two clicks instead of a typed value. On an AKD WallTool wall the opening is registered and WallTool draws the jambs; on an ordinary double-line wall the faces are split and cap lines drawn. If there is no wall under the first point, the object is simply drawn between the two points (the old behaviour), with a note.
 
 | Command | What it does |
 |---|---|
-| `ADD` | Draw a door between two picked points. Same type shortcuts. |
-| `AWW` | Draw a window between two picked points. |
-| `ACWW` | Draw a curtain wall between two picked points. |
+| `ADD` | Door between two points on a wall face. Same type shortcuts as `AD`. |
+| `AWW` | Window between two points on a wall face. |
+| `ACWW` | Curtain wall between two points on a wall face. |
 
 ### Corner tools
 

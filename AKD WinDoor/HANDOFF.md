@@ -14,6 +14,10 @@ Companion tool: `WW.lsp` (root of repo) draws double-line walls. Compatible with
 - Integration tests: `AKD WallTool/test/integration_tests.py` (loads this file).
 - Corner windows unsupported: XData lacks arm geometry (see README).
 
+## ADD / AWW / ACWW (2026-09-18)
+- Now pick two points on a wall FACE: `akd:face-place` derives centre + width from the clicks, sets `*hole-force-ctr*` and `USERR1`, then runs the normal `hole:do` path (WallTool opening or legacy cut). No wall under point 1 -> old direct draw.
+- `*hole-force-ctr*` was dead before this (read in `hole:do`, never set); `_vx-do` now sets it too, so VX re-places at the moved position.
+
 ## Current commands (see README.md for user-facing table)
 
 Placement (loops, accepts typed width, cuts hole first):

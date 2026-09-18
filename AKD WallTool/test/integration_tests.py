@@ -159,6 +159,53 @@ A.G[A.Sym('*T-E*')] = face_line((1000,75))
 A.ev("(hole:do *t-e* (list 1000.0 75.0 0.0) 't:post)")   # centre mode: face piece (0..2550) centre 1275 -> fits
 chk('AE: second AD on the same wall face piece -> second WallTool opening', hole_x(825, 1725) and hole_x(2550, 3450))
 
+# ADD / AWW / ACWW: two points on a wall face -> hole + object in it
+# The object drawing itself (ghost, leaf, arcs) is interactive, so akd:place-door /
+# akd:place-window are stubbed with a tagged INSERT: everything under test here is
+# the new face-pick -> width -> hole:do -> WallTool opening path.
+A.ev('''(progn
+  (setq *t-n* 0)
+  (defun t:mkobj (p1 p2 app / mid w e)
+    (setq mid (hole:mid p1 p2) w (distance p1 p2) *t-n* (1+ *t-n*))
+    (entmake (list (cons 0 "INSERT") (cons 8 "A-DOOR") (cons 2 "AKD-T") (cons 10 mid)))
+    (setq e (entlast))
+    (if (= app "ADOOR")
+      (_tagdoor e w "S" 1 1.0 mid (akd:unit (mapcar '- p2 p1)) (strcat "T-G" (itoa *t-n*)))
+      (_tagwin e w 1 1.0 mid (akd:unit (mapcar '- p2 p1)) (strcat "T-G" (itoa *t-n*))))
+    e)
+  (defun akd:place-door (p1 p2) (t:mkobj p1 p2 "ADOOR"))
+  (defun akd:place-window (p1 p2) (t:mkobj p1 p2 "AWIN")))''')
+def inserts(): return [e for e, d in A.DB.items() if e not in A.DELETED
+                       and dict((A.car(x), A.cdr(x)) for x in d).get(0) == 'INSERT']
+fresh(); add(((0,0),(6000,0)))
+A.POINTQ[:] = [[2000.0, 75.0, 0.0], [2900.0, 75.0, 0.0]]
+A.ev('(c:ADD)')
+ops = A.ev('(akd:wt-openings)')
+chk('ADD: two points on the wall face cut the opening and place the door in it',
+    hole_x(2000, 2900) and len(ops or []) == 1 and near(tuple(ops[0][0])[:2], (2450, 0)) and abs(ops[0][2] - 900) < 1e-6)
+fresh(); add(((0,0),(6000,0)))
+A.POINTQ[:] = [[3000.0, -75.0, 0.0], [4200.0, -75.0, 0.0]]
+A.ev('(c:AWW)')
+chk('AWW: works from the far face too; width = distance along the wall', hole_x(3000, 4200) and len(inserts()) == 1)
+fresh(); add(((0,0),(6000,0)))
+A.POINTQ[:] = [[2000.0, 3000.0, 0.0], [2900.0, 3000.0, 0.0]]
+A.ev('(c:AWW)')
+chk('AWW away from any wall: object drawn between the points, wall untouched',
+    solid_x(2000, 2900) and master_set() == [mk((0,0),(6000,0))])
+fresh(); add(((0,0),(6000,0)))
+A.POINTQ[:] = [[2000.0, 75.0, 0.0], [2000.0, 75.0, 0.0]]
+A.ev('(c:ADD)')
+chk('ADD with both points at the same station: refused, wall untouched', solid_x(1500, 2500) and not inserts())
+# ordinary (non-WallTool) wall: legacy cut still works from the face
+fresh()
+f1 = mkline((0,0), (6000,0), 'WALL'); f2 = mkline((0,150), (6000,150), 'WALL')
+A.POINTQ[:] = [[2000.0, 0.0, 0.0], [2900.0, 0.0, 0.0]]
+A.ev('(c:ADD)')
+segs = sorted(mk(a, b) for _, a, b in A.db_lines('WALL'))
+chk('ADD on an ordinary double-line wall: both faces split at the picked points (legacy cut)',
+    len(segs) == 4 and mk((0,0),(2000,0)) in segs and mk((2900,0),(6000,0)) in segs
+    and mk((0,150),(2000,150)) in segs and mk((2900,150),(6000,150)) in segs and len(inserts()) == 1)
+
 # ---------------------------------------------------------------- H / AB: WWE
 fresh(); add(((0,0),(4000,0))); add(((4000,0),(4000,3000))); add(((8000,-3000),(8000,3000)))
 d1, l1 = place((2000,0), 900); data = list(A.DB[d1])

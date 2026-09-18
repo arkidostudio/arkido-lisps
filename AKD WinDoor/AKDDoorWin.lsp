@@ -541,6 +541,43 @@
                      (cons 1000 "AWINLBL")
                      (cons 1000 (strcat "G:" (if gname gname "")))))))))
 
+;; --- 2-click placement on a wall face (ADD / AWW / ACWW) ---------------
+;; The two points are picked ON A WALL FACE: they give the opening's position and
+;; its width along the wall. The hole is cut (AKD WallTool wall -> WallTool draws
+;; the opening and its jambs; ordinary double-line wall -> faces split + cap lines)
+;; and the object is placed in it. With no wall under the first point the object is
+;; simply drawn between the two points, as these commands did before.
+;; post = hole:post-door / hole:post-window / hole:post-curtain
+;; draw = akd:place-door / akd:place-window / akd:place-curtain (fallback)
+(defun akd:face-place (p1 p2 post draw label / ss ent seg dir w oldw *hole-force-ctr*)
+  (cond
+    ((or (null p1) (null p2)) (princ "\nCancelled."))
+    (t
+      (if (setq ss (ssget p1 (list (cons 0 "LINE,LWPOLYLINE"))))
+        (setq ent (_vx-wall-ent ss p1)))
+      (if ent (setq seg (hole:picksegment ent p1)))
+      (setq dir (if seg (akd:unit (mapcar '- (nth 3 seg) (nth 2 seg)))))
+      (setq w (if dir (abs (+ (* (- (car p2) (car p1)) (car dir))
+                              (* (- (cadr p2) (cadr p1)) (cadr dir))))))
+      (cond
+        ((null dir)
+          (princ (strcat "\nNo wall face under the first point - " label
+                         " drawn between the picked points (no hole)."))
+          (apply draw (list p1 p2)))
+        ((< w 1.0)
+          (princ "\nThe two points are at the same position along the wall - cancelled."))
+        (t
+          (setq oldw (getvar "USERR1")
+                *hole-force-ctr* (hole:mid p1 p2)
+                *akd-cancel* nil)
+          (setvar "USERR1" w)
+          (command-s "_.UNDO" "_BE")
+          (hole:do ent p1 post)
+          (command-s "_.UNDO" "_E")
+          (if *akd-cancel* (command-s "_.U"))
+          (setvar "USERR1" oldw)))))
+  (princ))
+
 (defun c:AWW ( / fw fd os p1 p2 ang v perp p1i p2i
                  nd n step i pc edges e1 e2 cmde
                  ents width mid gname )
@@ -549,7 +586,7 @@
     (progn
       (initget "D S")
       (setq p1 (getpoint
-                 (strcat "\nFirst window point or [D=divisions/S=sliding] ("
+                 (strcat "\nFirst window point on the wall face or [D=divisions/S=sliding] ("
                          (if *win-slide* "sliding" "fixed") ", "
                          (itoa *win-div*) "div): ")))
       (cond
@@ -561,9 +598,8 @@
         ((eq p1 "S")
           (setq *win-slide* (not *win-slide*))
           (princ (strcat "\nWindow: " (if *win-slide* "Sliding" "Fixed") ".")) t))))
-  (if p1 (setq p2 (getpoint p1 "\nSecond window point: ")))
-  (akd:place-window p1 p2)
-  (princ))
+  (if p1 (setq p2 (getpoint p1 "\nSecond window point along the same face: ")))
+  (akd:face-place p1 p2 'hole:post-window 'akd:place-window "window"))
 
 (defun akd:place-window (p1 p2 / fw fd os ang v perp p1i p2i
                                   nd n step i pc edges e1 e2 cmde
@@ -1115,7 +1151,7 @@
     (progn
       (initget "A D S Pocket Number")
       (setq p1 (getpoint
-                 (strcat "\nFirst door point or [A=Single/D=Double/S=sliding/Pocket/Number] ("
+                 (strcat "\nFirst door point on the wall face or [A=Single/D=Double/S=sliding/Pocket/Number] ("
                          *door-type*
                          (if (eq *door-type* "G")
                            (strcat ", " (itoa *slide-div*) "p") "")
@@ -1135,8 +1171,8 @@
          (setq tk (getint
                     (strcat "\nSliding panels <" (itoa *slide-div*) ">: ")))
          (if tk (setq *slide-div* tk)) t))))
-  (if p1 (setq p2 (getpoint p1 "\nSecond door point: ")))
-  (akd:place-door p1 p2)
+  (if p1 (setq p2 (getpoint p1 "\nSecond door point along the same face: ")))
+  (akd:face-place p1 p2 'hole:post-door 'akd:place-door "door")
   (setq *error* old-err) (princ))
 
 (defun akd:place-door (p1 p2 / fw fd pt-thk ang v perp mid width
@@ -1770,7 +1806,7 @@
                    (strcat "Divs=" (itoa *ac-div*)))))
   (while (progn
     (initget "Spacing Divisions")
-    (setq p1 (getpoint (strcat "\nFirst curtain point or [Spacing/Divisions] ("
+    (setq p1 (getpoint (strcat "\nFirst curtain point on the wall face or [Spacing/Divisions] ("
                        (if (= *ac-mode* "M")
                          (strcat "sp=" (rtos *ac-spacing* 2 0))
                          (strcat (itoa *ac-div*) "div")) "): ")))
@@ -1784,9 +1820,8 @@
         (initget 6)
         (setq nd (getint (strcat "\nDivisions <" (itoa *ac-div*) ">: ")))
         (if nd (progn (setq *ac-div* nd) (setq *ac-mode* "D"))) t))))
-  (if p1 (setq p2 (getpoint p1 "\nSecond curtain point: ")))
-  (akd:place-curtain p1 p2)
-  (princ))
+  (if p1 (setq p2 (getpoint p1 "\nSecond curtain point along the same face: ")))
+  (akd:face-place p1 p2 'hole:post-curtain 'akd:place-curtain "curtain wall"))
 
 ;; -- Corner window (AXW) --------------------------------------------
 

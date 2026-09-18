@@ -384,6 +384,22 @@ def ssget(*args):
     if args and args[0] == '_X':
         out = [e for e in DB if e not in DELETED and _match(DB[e], args[1] if len(args) > 1 else None)]
         return out or None
+    if args and isinstance(args[0], (list, tuple)) and args[0] and isinstance(args[0][0], (int, float)):
+        # point selection: LINEs whose geometry passes through that point
+        px, py = float(args[0][0]), float(args[0][1])
+        filt = args[1] if len(args) > 1 else None
+        out = []
+        for e, d in DB.items():
+            if e in DELETED or not _match(d, filt): continue
+            g = {car(x): cdr(x) for x in d}
+            if g.get(0) != 'LINE': continue
+            (ax, ay), (bx, by) = g[10][:2], g[11][:2]
+            L = math.dist((ax, ay), (bx, by))
+            if L < 1e-9: continue
+            ux, uy = (bx-ax)/L, (by-ay)/L
+            t = (px-ax)*ux + (py-ay)*uy
+            if -1e-6 <= t <= L + 1e-6 and abs((px-ax)*uy - (py-ay)*ux) < 1e-6: out.append(e)
+        return out or None
     raise LispError('interactive ssget not supported in tests')
 def sssetfirst(*a): SSFIRST[0] = None; return None
 for k, v in {'ENTMAKE': entmake, 'ENTGET': entget, 'ENTMOD': entmod, 'ENTDEL': entdel, 'ENTLAST': lambda: LAST[0],
@@ -398,6 +414,7 @@ for k, v in {'ENTMAKE': entmake, 'ENTGET': entget, 'ENTMOD': entmod, 'ENTDEL': e
     G[Sym(k)] = v
 
 def db_reset():
+    VARS.clear(); VARS['CTAB'] = 'Model'
     DB.clear(); DELETED.clear(); LAST[0] = None; SSFIRST[0] = None
 def db_lines(layer):
     out = []
@@ -435,12 +452,16 @@ def entsel(*a):
     x = ENTSELQ.pop(0)
     if x is None: ERRNO[0] = 7
     return x
+VARS = {'CTAB': 'Model'}
 def getvar2(n):
     n = n.upper()
     if n == 'ERRNO': return ERRNO[0]
-    return {'CTAB': 'Model'}.get(n, 0)
+    return VARS.get(n, 0)
 def setvar2(n, v):
-    if n.upper() == 'ERRNO': ERRNO[0] = v
+    n = n.upper()
+    if n == 'ERRNO': ERRNO[0] = v
+    else: VARS[n] = v
+    return v
 for k, v in {'ENTSEL': entsel, 'GETDIST': lambda *a: DISTQ.pop(0) if DISTQ else None,
              'GETVAR': getvar2, 'SETVAR': setvar2, 'TRANS': lambda p, a, b: p}.items():
     G[Sym(k)] = v
